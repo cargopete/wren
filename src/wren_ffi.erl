@@ -1,47 +1,80 @@
 -module(wren_ffi).
 -include_lib("amqp_client/include/amqp_client.hrl").
--export([spike/0]).
+-export([
+    connect/4,
+    open_channel/1,
+    declare_queue/2,
+    publish/4,
+    get/2,
+    close_channel/1,
+    close_connection/1
+]).
 
-%% Minimal end-to-end spike: connect, declare a queue, publish a message,
-%% then poll basic.get until it comes back. Returns {ok, Payload} | {error, Reason},
-%% which Gleam reads directly as Result(String, String).
-spike() ->
+%% Each function returns a value shaped for Gleam:
+%%   {ok, X} | {error, Binary}  -> Result(X, String)
+%% Opaque connection/channel pids are passed back and forth as-is.
+
+connect(Host, Port, User, Pass) ->
     Params = #amqp_params_network{
-        host = "localhost",
-        port = 5672,
-        username = <<"wren">>,
-        password = <<"wren">>
+        host = binary_to_list(Host),
+        port = Port,
+        username = User,
+        password = Pass
     },
     case amqp_connection:start(Params) of
-        {ok, Connection} ->
-            try
-                {ok, Channel} = amqp_connection:open_channel(Connection),
-                Queue = <<"wren_spike">>,
-                #'queue.declare_ok'{} =
-                    amqp_channel:call(Channel, #'queue.declare'{queue = Queue, durable = true}),
-                Payload = <<"hello from wren"/utf8>>,
-                Publish = #'basic.publish'{exchange = <<"">>, routing_key = Queue},
-                ok = amqp_channel:cast(Channel, Publish, #amqp_msg{payload = Payload}),
-                Result = get_message(Channel, Queue, 20),
-                amqp_channel:close(Channel),
-                amqp_connection:close(Connection),
-                Result
-            catch
-                Class:Reason ->
-                    catch amqp_connection:close(Connection),
-                    {error, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
-            end;
-        {error, Reason} ->
-            {error, list_to_binary(io_lib:format("connect failed: ~p", [Reason]))}
+        {ok, Connection} -> {ok, Connection};
+        {error, Reason} -> {error, fmt(Reason)}
     end.
 
-get_message(_Channel, _Queue, 0) ->
-    {error, <<"no message after retries">>};
-get_message(Channel, Queue, Retries) ->
+open_channel(Connection) ->
+    case amqp_connection:open_channel(Connection) of
+        {ok, Channel} -> {ok, Channel};
+        closing -> {error, <<"connection is closing">>};
+        {error, Reason} -> {error, fmt(Reason)}
+    end.
+
+declare_queue(Channel, Queue) ->
+    %% RabbitMQ 4.x forbids transient queues by default, so declare durable.
+    Declare = #'queue.declare'{queue = Queue, durable = true},
+    try amqp_channel:call(Channel, Declare) of
+        #'queue.declare_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+publish(Channel, Exchange, RoutingKey, Payload) ->
+    Publish = #'basic.publish'{exchange = Exchange, routing_key = RoutingKey},
+    try amqp_channel:cast(Channel, Publish, #amqp_msg{payload = Payload}) of
+        ok -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+%% Blocking-ish poll over basic.get; a placeholder until the real
+%% subscription-based consumer lands.
+get(Channel, Queue) ->
+    get(Channel, Queue, 20).
+
+get(_Channel, _Queue, 0) ->
+    {error, <<"no message available">>};
+get(Channel, Queue, Retries) ->
     case amqp_channel:call(Channel, #'basic.get'{queue = Queue, no_ack = true}) of
         {#'basic.get_ok'{}, #amqp_msg{payload = Payload}} ->
             {ok, Payload};
         #'basic.get_empty'{} ->
             timer:sleep(100),
-            get_message(Channel, Queue, Retries - 1)
+            get(Channel, Queue, Retries - 1)
     end.
+
+close_channel(Channel) ->
+    try amqp_channel:close(Channel) catch _:_ -> ok end,
+    nil.
+
+close_connection(Connection) ->
+    try amqp_connection:close(Connection) catch _:_ -> ok end,
+    nil.
+
+fmt(Term) ->
+    list_to_binary(io_lib:format("~p", [Term])).
