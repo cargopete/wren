@@ -1,0 +1,25 @@
+# Local RabbitMQ for wren development.
+#
+#   docker compose up -d      # start the broker
+#   docker compose down       # stop it
+#
+# Management UI: http://localhost:15672  (login: wren / wren)
+#
+# Notes (hard-won):
+#   - HOME=/tmp keeps the Erlang cookie off Docker Desktop's VirtioFS volume,
+#     which otherwise reports the cookie as insecurely-permissioned (eacces).
+#   - A dedicated `wren` user is used because the default `guest` user is
+#     restricted to loopback and a port-forwarded connection looks non-loopback.
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: wren-rabbit
+    hostname: wren-rabbit
+    environment:
+      HOME: /tmp
+      RABBITMQ_ERLANG_COOKIE: wren-local-cookie
+      RABBITMQ_DEFAULT_USER: wren
+      RABBITMQ_DEFAULT_PASS: wren
+    ports:
+      - "5672:5672"
+      - "15672:15672"
