@@ -1,8 +1,11 @@
 //// wren — an ergonomic RabbitMQ / AMQP client for Gleam.
 ////
-//// This is the early, building-block layer: typed connections, channels, and
-//// the primitive publish/get operations. The subscription-based, OTP-supervised
-//// consumer (driven by the `Confirmation` type below) is the next step.
+//// Typed connections and channels, plus a subscription-based consumer that
+//// dispatches each delivery to a handler and settles it according to the
+//// `Confirmation` the handler returns.
+////
+//// The consumer currently runs as a plain spawned process; the next step is
+//// to place it under an OTP supervisor so reconnection is the runtime's job.
 
 import gleam/io
 import gleam/result
@@ -17,26 +20,35 @@ pub type Connection
 /// A channel multiplexed over a `Connection`. Opaque: created via `open_channel`.
 pub type Channel
 
+/// A running subscription. Opaque: created via `consume`, ended via `stop`.
+pub type Consumer
+
+/// A delivered message handed to a consumer's handler.
+pub type Message {
+  Message(
+    payload: String,
+    routing_key: String,
+    headers: List(#(String, String)),
+  )
+}
+
 /// Anything that can go wrong talking to the broker.
 pub type WrenError {
   /// Failed to establish the underlying AMQP connection.
   ConnectionFailed(reason: String)
-  /// A channel-level operation (declare, publish, get, …) failed.
+  /// A channel-level operation (declare, publish, consume, …) failed.
   ChannelFailed(reason: String)
 }
 
 /// How a consumer wishes a delivered message to be settled with the broker.
-///
-/// Not yet wired into a consumer — it's here to anchor the API we're building
-/// toward, where a handler returns one of these and wren does the right thing.
 pub type Confirmation {
   /// Processed successfully — remove from the queue.
   Ack
   /// Permanent failure — discard without redelivery or dead-lettering.
   Reject
-  /// Transient failure — redeliver according to the retry policy.
+  /// Transient failure — redeliver for another attempt.
   Retry
-  /// Unprocessable — route to the dead-letter queue.
+  /// Unprocessable — route to the dead-letter exchange, if configured.
   DeadLetter
 }
 
@@ -84,11 +96,31 @@ pub fn publish(
   |> result.map_error(ChannelFailed)
 }
 
-/// Fetch a single message from a queue (polls briefly). A placeholder until
-/// the proper subscription-based consumer arrives.
+/// Fetch a single message from a queue (polls briefly). A primitive for
+/// one-off fetches; prefer `consume` for ongoing work.
 pub fn get(channel: Channel, queue: String) -> Result(String, WrenError) {
   ffi_get(channel, queue)
   |> result.map_error(ChannelFailed)
+}
+
+// ===========================================================================
+// Consuming
+// ===========================================================================
+
+/// Subscribe to a queue. Each delivery is passed to `handler`, and settled
+/// with the broker according to the `Confirmation` it returns.
+pub fn consume(
+  channel: Channel,
+  queue: String,
+  handler: fn(Message) -> Confirmation,
+) -> Result(Consumer, WrenError) {
+  ffi_consume(channel, queue, handler)
+  |> result.map_error(ChannelFailed)
+}
+
+/// Stop a running consumer.
+pub fn stop(consumer: Consumer) -> Nil {
+  ffi_stop(consumer)
 }
 
 /// Close a channel. Safe to call even if already closed.
@@ -102,7 +134,7 @@ pub fn close_connection(connection: Connection) -> Nil {
 }
 
 // ===========================================================================
-// Demo — proves the typed API round-trips end to end.
+// Demo — a live subscription that handles real deliveries.
 // ===========================================================================
 
 pub fn main() -> Nil {
@@ -111,20 +143,38 @@ pub fn main() -> Nil {
     use connection <- result.try(connect(config))
     use channel <- result.try(open_channel(connection))
     use _ <- result.try(declare_queue(channel, "wren_demo"))
+
+    let handler = fn(message: Message) -> Confirmation {
+      io.println(
+        "📨 received on '" <> message.routing_key <> "': " <> message.payload,
+      )
+      Ack
+    }
+    use consumer <- result.try(consume(channel, "wren_demo", handler))
+
     use _ <- result.try(publish(
       channel,
       exchange: "",
       routing_key: "wren_demo",
-      payload: "hello from the wren API",
+      payload: "first message",
     ))
-    use payload <- result.try(get(channel, "wren_demo"))
+    use _ <- result.try(publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_demo",
+      payload: "second message",
+    ))
+
+    // Give the consumer a moment to process before we tear down.
+    sleep(500)
+    stop(consumer)
     close_channel(channel)
     close_connection(connection)
-    Ok(payload)
+    Ok(Nil)
   }
 
   case outcome {
-    Ok(payload) -> io.println("✅ round-trip via wren API: " <> payload)
+    Ok(_) -> io.println("✅ consumer demo complete")
     Error(error) -> io.println("❌ " <> describe(error))
   }
 }
@@ -164,6 +214,19 @@ fn ffi_publish(
 
 @external(erlang, "wren_ffi", "get")
 fn ffi_get(channel: Channel, queue: String) -> Result(String, String)
+
+@external(erlang, "wren_ffi", "consume")
+fn ffi_consume(
+  channel: Channel,
+  queue: String,
+  handler: fn(Message) -> Confirmation,
+) -> Result(Consumer, String)
+
+@external(erlang, "wren_ffi", "stop")
+fn ffi_stop(consumer: Consumer) -> Nil
+
+@external(erlang, "wren_ffi", "sleep")
+fn sleep(milliseconds: Int) -> Nil
 
 @external(erlang, "wren_ffi", "close_channel")
 fn ffi_close_channel(channel: Channel) -> Nil
