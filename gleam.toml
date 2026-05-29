@@ -1,0 +1,15 @@
+name = "wren"
+version = "1.0.0"
+
+description = "An ergonomic RabbitMQ / AMQP messaging library for Gleam, built on the BEAM and OTP."
+licences = ["MIT"]
+repository = { type = "github", user = "cargopete", repo = "wren" }
+
+# For a full reference of all the available options, you can have a look at
+# https://gleam.run/writing-gleam/gleam-toml/.
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
