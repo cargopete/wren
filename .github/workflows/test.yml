@@ -10,6 +10,19 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      rabbitmq:
+        image: rabbitmq:4
+        env:
+          RABBITMQ_DEFAULT_USER: wren
+          RABBITMQ_DEFAULT_PASS: wren
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v6
       - uses: erlef/setup-beam@v1

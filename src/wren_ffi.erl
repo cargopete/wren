@@ -4,12 +4,13 @@
     connect/4,
     open_channel/1,
     declare_queue/2,
+    purge_queue/2,
     publish/4,
+    publish_full/9,
     get/2,
     subscribe/3,
     settle/3,
     decode_event/1,
-    sleep/1,
     close_channel/1,
     close_connection/1
 ]).
@@ -47,6 +48,15 @@ declare_queue(Channel, Queue) ->
         Class:Reason -> {error, fmt({Class, Reason})}
     end.
 
+%% Remove all ready messages from a queue. Handy for deterministic tests.
+purge_queue(Channel, Queue) ->
+    try amqp_channel:call(Channel, #'queue.purge'{queue = Queue}) of
+        #'queue.purge_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
 publish(Channel, Exchange, RoutingKey, Payload) ->
     Publish = #'basic.publish'{exchange = Exchange, routing_key = RoutingKey},
     try amqp_channel:cast(Channel, Publish, #amqp_msg{payload = Payload}) of
@@ -55,6 +65,48 @@ publish(Channel, Exchange, RoutingKey, Payload) ->
     catch
         Class:Reason -> {error, fmt({Class, Reason})}
     end.
+
+%% Publish with the full set of producer options. Optional fields arrive from
+%% Gleam as `none` | `{some, Value}`; bools as `true` | `false`; headers as a
+%% list of `{Key, Value}` binaries.
+publish_full(Channel, Exchange, RoutingKey, Payload, Headers, Priority, Expiration, Mandatory, ContentType) ->
+    Publish = #'basic.publish'{
+        exchange = Exchange,
+        routing_key = RoutingKey,
+        mandatory = Mandatory
+    },
+    Props =
+        lists:foldl(
+            fun(Apply, Acc) -> Apply(Acc) end,
+            #'P_basic'{headers = build_headers(Headers)},
+            [
+                with_content_type(ContentType),
+                with_priority(Priority),
+                with_expiration(Expiration)
+            ]
+        ),
+    try amqp_channel:cast(Channel, Publish, #amqp_msg{props = Props, payload = Payload}) of
+        ok -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+%% An empty header list means "no headers table" (undefined), not an empty one.
+build_headers([]) ->
+    undefined;
+build_headers(Headers) when is_list(Headers) ->
+    [{Key, longstr, Value} || {Key, Value} <- Headers].
+
+with_content_type(none) -> fun(Props) -> Props end;
+with_content_type({some, ContentType}) -> fun(Props) -> Props#'P_basic'{content_type = ContentType} end.
+
+with_priority(none) -> fun(Props) -> Props end;
+with_priority({some, Priority}) -> fun(Props) -> Props#'P_basic'{priority = Priority} end.
+
+%% AMQP carries per-message expiration as a shortstr of milliseconds.
+with_expiration(none) -> fun(Props) -> Props end;
+with_expiration({some, Millis}) -> fun(Props) -> Props#'P_basic'{expiration = integer_to_binary(Millis)} end.
 
 %% Blocking-ish poll over basic.get; a primitive kept for one-off fetches.
 get(Channel, Queue) ->
@@ -125,10 +177,6 @@ extract_headers(#'P_basic'{headers = Headers}) when is_list(Headers) ->
     );
 extract_headers(_) ->
     [].
-
-sleep(Milliseconds) ->
-    timer:sleep(Milliseconds),
-    nil.
 
 close_channel(Channel) ->
     try amqp_channel:close(Channel) catch _:_ -> ok end,

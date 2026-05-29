@@ -19,11 +19,18 @@ built on the BEAM and OTP.
 - Retry and dead-letter handling driven by message headers.
 - Connection recovery that leans on OTP supervision rather than hand-rolled loops.
 
+See [`ROADMAP.md`](./ROADMAP.md) for the path to feature parity with a
+production AMQP client and the milestones along the way.
+
 ## Development
 
+The tests and demo talk to a real broker. Bring one up first:
+
 ```sh
-gleam run   # run the project
-gleam test  # run the tests
+docker compose up -d            # start a local RabbitMQ (wren / wren)
+gleam test                      # run the integration tests
+gleam run -m wren/demo          # run the supervised-consumer demo
+docker compose down             # stop the broker
 ```
 
 ## Licence

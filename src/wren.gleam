@@ -8,7 +8,7 @@
 
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Pid}
-import gleam/io
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
@@ -90,6 +90,12 @@ pub fn declare_queue(channel: Channel, name: String) -> Result(Nil, WrenError) {
   |> result.map_error(ChannelFailed)
 }
 
+/// Remove all ready messages from a queue, returning nothing.
+pub fn purge_queue(channel: Channel, name: String) -> Result(Nil, WrenError) {
+  ffi_purge_queue(channel, name)
+  |> result.map_error(ChannelFailed)
+}
+
 /// Publish a message to an exchange with a routing key.
 /// Use `""` as the exchange to publish straight to a queue by name.
 pub fn publish(
@@ -99,6 +105,122 @@ pub fn publish(
   payload payload: String,
 ) -> Result(Nil, WrenError) {
   ffi_publish(channel, exchange, routing_key, payload)
+  |> result.map_error(ChannelFailed)
+}
+
+// ===========================================================================
+// Publishing with options
+// ===========================================================================
+
+/// Options controlling how a message is published. Build with `publish_options`
+/// and refine with the `to_*` / `with_*` helpers below.
+///
+/// Mirrors the producer surface of the Rust `bunnyhop` crate: routing,
+/// headers, priority, per-message expiration, and the `mandatory` flag.
+pub type PublishOptions {
+  PublishOptions(
+    /// Exchange to publish to. `""` is the default exchange (route by queue name).
+    exchange: String,
+    /// Routing key (or queue name when using the default exchange).
+    routing_key: String,
+    /// Arbitrary string headers, carried as an AMQP `longstr` field table.
+    headers: List(#(String, String)),
+    /// Message priority (0–255 on a priority queue).
+    priority: Option(Int),
+    /// Per-message TTL in milliseconds before the broker discards it.
+    expiration: Option(Int),
+    /// Ask the broker to return the message if it can't be routed to a queue.
+    mandatory: Bool,
+    /// MIME content type, e.g. `"application/json"`.
+    content_type: Option(String),
+  )
+}
+
+/// A blank set of publish options targeting the default exchange. Refine it
+/// with the builder helpers, e.g.
+/// `publish_options() |> route("orders") |> with_priority(5)`.
+pub fn publish_options() -> PublishOptions {
+  PublishOptions(
+    exchange: "",
+    routing_key: "",
+    headers: [],
+    priority: None,
+    expiration: None,
+    mandatory: False,
+    content_type: None,
+  )
+}
+
+/// Set the target exchange.
+pub fn to_exchange(
+  options: PublishOptions,
+  exchange: String,
+) -> PublishOptions {
+  PublishOptions(..options, exchange:)
+}
+
+/// Set the routing key (or queue name, on the default exchange).
+pub fn route(options: PublishOptions, routing_key: String) -> PublishOptions {
+  PublishOptions(..options, routing_key:)
+}
+
+/// Append a single header.
+pub fn with_header(
+  options: PublishOptions,
+  key: String,
+  value: String,
+) -> PublishOptions {
+  PublishOptions(..options, headers: [#(key, value), ..options.headers])
+}
+
+/// Replace all headers at once.
+pub fn with_headers(
+  options: PublishOptions,
+  headers: List(#(String, String)),
+) -> PublishOptions {
+  PublishOptions(..options, headers:)
+}
+
+/// Set the message priority.
+pub fn with_priority(options: PublishOptions, priority: Int) -> PublishOptions {
+  PublishOptions(..options, priority: Some(priority))
+}
+
+/// Set a per-message expiration (TTL) in milliseconds.
+pub fn with_expiration(options: PublishOptions, millis: Int) -> PublishOptions {
+  PublishOptions(..options, expiration: Some(millis))
+}
+
+/// Mark the publish as mandatory (broker returns unroutable messages).
+pub fn mandatory(options: PublishOptions) -> PublishOptions {
+  PublishOptions(..options, mandatory: True)
+}
+
+/// Set the MIME content type.
+pub fn with_content_type(
+  options: PublishOptions,
+  content_type: String,
+) -> PublishOptions {
+  PublishOptions(..options, content_type: Some(content_type))
+}
+
+/// Publish a message with the full set of `PublishOptions`.
+pub fn publish_with_options(
+  channel: Channel,
+  payload: String,
+  options: PublishOptions,
+) -> Result(Nil, WrenError) {
+  ffi_publish_full(
+    channel,
+    options.exchange,
+    options.routing_key,
+    payload,
+    options.headers,
+    options.priority,
+    options.expiration,
+    options.mandatory,
+    options.content_type,
+  )
   |> result.map_error(ChannelFailed)
 }
 
@@ -207,59 +329,6 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
 }
 
 // ===========================================================================
-// Demo — a supervised consumer handling real deliveries.
-// ===========================================================================
-
-pub fn main() -> Nil {
-  let config = Config(..default_config(), username: "wren", password: "wren")
-  let outcome = {
-    use connection <- result.try(connect(config))
-    use channel <- result.try(open_channel(connection))
-    use _ <- result.try(declare_queue(channel, "wren_demo"))
-
-    let handler = fn(message: Message) -> Confirmation {
-      io.println(
-        "📨 received on '" <> message.routing_key <> "': " <> message.payload,
-      )
-      Ack
-    }
-    use consumer <- result.try(start_consumer(channel, "wren_demo", handler))
-
-    use _ <- result.try(publish(
-      channel,
-      exchange: "",
-      routing_key: "wren_demo",
-      payload: "first message",
-    ))
-    use _ <- result.try(publish(
-      channel,
-      exchange: "",
-      routing_key: "wren_demo",
-      payload: "second message",
-    ))
-
-    // Give the supervised consumer a moment to process before tearing down.
-    sleep(500)
-    stop(consumer)
-    close_channel(channel)
-    close_connection(connection)
-    Ok(Nil)
-  }
-
-  case outcome {
-    Ok(_) -> io.println("✅ supervised consumer demo complete")
-    Error(error) -> io.println("❌ " <> describe(error))
-  }
-}
-
-fn describe(error: WrenError) -> String {
-  case error {
-    ConnectionFailed(reason) -> "connection failed: " <> reason
-    ChannelFailed(reason) -> "channel failed: " <> reason
-  }
-}
-
-// ===========================================================================
 // FFI bindings into src/wren_ffi.erl (Erlang `amqp_client`).
 // ===========================================================================
 
@@ -285,6 +354,22 @@ fn ffi_publish(
   payload: String,
 ) -> Result(Nil, String)
 
+@external(erlang, "wren_ffi", "publish_full")
+fn ffi_publish_full(
+  channel: Channel,
+  exchange: String,
+  routing_key: String,
+  payload: String,
+  headers: List(#(String, String)),
+  priority: Option(Int),
+  expiration: Option(Int),
+  mandatory: Bool,
+  content_type: Option(String),
+) -> Result(Nil, String)
+
+@external(erlang, "wren_ffi", "purge_queue")
+fn ffi_purge_queue(channel: Channel, name: String) -> Result(Nil, String)
+
 @external(erlang, "wren_ffi", "get")
 fn ffi_get(channel: Channel, queue: String) -> Result(String, String)
 
@@ -300,9 +385,6 @@ fn ffi_settle(channel: Channel, tag: Int, confirmation: Confirmation) -> Nil
 
 @external(erlang, "wren_ffi", "decode_event")
 fn decode_event(message: Dynamic) -> Event
-
-@external(erlang, "wren_ffi", "sleep")
-fn sleep(milliseconds: Int) -> Nil
 
 @external(erlang, "wren_ffi", "close_channel")
 fn ffi_close_channel(channel: Channel) -> Nil
