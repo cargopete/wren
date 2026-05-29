@@ -6,8 +6,9 @@
     declare_queue/2,
     publish/4,
     get/2,
-    consume/3,
-    stop/1,
+    subscribe/3,
+    settle/3,
+    decode_event/1,
     sleep/1,
     close_channel/1,
     close_connection/1
@@ -15,7 +16,7 @@
 
 %% Each function returns a value shaped for Gleam:
 %%   {ok, X} | {error, Binary}  -> Result(X, String)
-%% Opaque connection/channel/consumer pids are passed back and forth as-is.
+%% Opaque connection/channel pids are passed back and forth as-is.
 
 connect(Host, Port, User, Pass) ->
     Params = #amqp_params_network{
@@ -70,66 +71,45 @@ get(Channel, Queue, Retries) ->
             get(Channel, Queue, Retries - 1)
     end.
 
-%% Subscribe to a queue and dispatch each delivery to a Gleam handler
-%% (fun/1 :: Message -> Confirmation). Spawns the receive loop and returns
-%% the loop's pid so the caller can stop it.
-consume(Channel, Queue, Handler) ->
-    Parent = self(),
-    Pid = spawn(fun() -> consume_init(Channel, Queue, Handler, Parent) end),
-    receive
-        {Pid, subscribed} -> {ok, Pid};
-        {Pid, {error, Reason}} -> {error, Reason}
-    after 5000 ->
-        {error, <<"subscribe timed out">>}
-    end.
-
-consume_init(Channel, Queue, Handler, Parent) ->
+%% Register `Pid` (a Gleam actor) as the consumer for `Queue`. Deliveries then
+%% arrive in that process's mailbox as raw AMQP records, decoded by decode_event/1.
+subscribe(Channel, Queue, Pid) ->
     Consume = #'basic.consume'{queue = Queue},
-    try amqp_channel:subscribe(Channel, Consume, self()) of
-        #'basic.consume_ok'{} ->
-            Parent ! {self(), subscribed},
-            consume_loop(Channel, Handler);
-        Other ->
-            Parent ! {self(), {error, fmt(Other)}}
+    try amqp_channel:subscribe(Channel, Consume, Pid) of
+        #'basic.consume_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
     catch
-        Class:Reason ->
-            Parent ! {self(), {error, fmt({Class, Reason})}}
+        Class:Reason -> {error, fmt({Class, Reason})}
     end.
 
-consume_loop(Channel, Handler) ->
-    receive
-        %% Subscription handshake from the broker; ignore and keep going.
-        #'basic.consume_ok'{} ->
-            consume_loop(Channel, Handler);
-        %% A delivery: build a Gleam Message, run the handler, settle.
-        {#'basic.deliver'{delivery_tag = Tag, routing_key = RoutingKey},
-         #amqp_msg{payload = Payload, props = Props}} ->
-            Headers = extract_headers(Props),
-            Message = {message, Payload, RoutingKey, Headers},
-            Confirmation = Handler(Message),
-            settle(Channel, Tag, Confirmation),
-            consume_loop(Channel, Handler);
-        %% Broker cancelled our consumer.
-        #'basic.cancel'{} ->
-            ok;
-        stop ->
-            ok;
-        _Other ->
-            consume_loop(Channel, Handler)
-    end.
-
-%% Map a Gleam Confirmation atom onto the AMQP settlement command.
+%% Settle a delivery according to a Gleam `Confirmation` (passed as an atom).
 settle(Channel, Tag, ack) ->
-    amqp_channel:cast(Channel, #'basic.ack'{delivery_tag = Tag});
+    amqp_channel:cast(Channel, #'basic.ack'{delivery_tag = Tag}),
+    nil;
 settle(Channel, Tag, reject) ->
-    amqp_channel:cast(Channel, #'basic.reject'{delivery_tag = Tag, requeue = false});
+    amqp_channel:cast(Channel, #'basic.reject'{delivery_tag = Tag, requeue = false}),
+    nil;
 settle(Channel, Tag, retry) ->
     %% Placeholder: requeue for immediate redelivery. A real retry policy
     %% (delay queues, attempt counting) comes later.
-    amqp_channel:cast(Channel, #'basic.nack'{delivery_tag = Tag, requeue = true});
+    amqp_channel:cast(Channel, #'basic.nack'{delivery_tag = Tag, requeue = true}),
+    nil;
 settle(Channel, Tag, dead_letter) ->
     %% Reject without requeue -> routed to the queue's DLX, if configured.
-    amqp_channel:cast(Channel, #'basic.reject'{delivery_tag = Tag, requeue = false}).
+    amqp_channel:cast(Channel, #'basic.reject'{delivery_tag = Tag, requeue = false}),
+    nil.
+
+%% Convert a raw AMQP mailbox message into a Gleam `Event`:
+%%   {delivery, Tag, Payload, RoutingKey, Headers} | cancelled | ignored
+decode_event(
+    {#'basic.deliver'{delivery_tag = Tag, routing_key = RoutingKey},
+     #amqp_msg{payload = Payload, props = Props}}
+) ->
+    {delivery, Tag, Payload, RoutingKey, extract_headers(Props)};
+decode_event(#'basic.cancel'{}) ->
+    cancelled;
+decode_event(_Other) ->
+    ignored.
 
 %% Extract string-valued headers as a list of {Key, Value} binaries.
 extract_headers(#'P_basic'{headers = undefined}) ->
@@ -145,10 +125,6 @@ extract_headers(#'P_basic'{headers = Headers}) when is_list(Headers) ->
     );
 extract_headers(_) ->
     [].
-
-stop(Consumer) ->
-    Consumer ! stop,
-    nil.
 
 sleep(Milliseconds) ->
     timer:sleep(Milliseconds),

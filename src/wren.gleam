@@ -1,13 +1,17 @@
 //// wren — an ergonomic RabbitMQ / AMQP client for Gleam.
 ////
-//// Typed connections and channels, plus a subscription-based consumer that
-//// dispatches each delivery to a handler and settles it according to the
-//// `Confirmation` the handler returns.
-////
-//// The consumer currently runs as a plain spawned process; the next step is
-//// to place it under an OTP supervisor so reconnection is the runtime's job.
+//// Typed connections and channels, plus a supervised, actor-based consumer.
+//// Each delivery is dispatched to a handler and settled according to the
+//// `Confirmation` the handler returns. The consumer runs as an OTP actor under
+//// a supervisor, so a crash means the runtime restarts it and re-subscribes —
+//// no hand-rolled reconnection loops.
 
+import gleam/dynamic.{type Dynamic}
+import gleam/erlang/process.{type Pid}
 import gleam/io
+import gleam/otp/actor
+import gleam/otp/static_supervisor
+import gleam/otp/supervision
 import gleam/result
 
 // ===========================================================================
@@ -20,8 +24,10 @@ pub type Connection
 /// A channel multiplexed over a `Connection`. Opaque: created via `open_channel`.
 pub type Channel
 
-/// A running subscription. Opaque: created via `consume`, ended via `stop`.
-pub type Consumer
+/// A running, supervised subscription. Created via `start_consumer`.
+pub opaque type Consumer {
+  Consumer(supervisor: Pid)
+}
 
 /// A delivered message handed to a consumer's handler.
 pub type Message {
@@ -97,30 +103,10 @@ pub fn publish(
 }
 
 /// Fetch a single message from a queue (polls briefly). A primitive for
-/// one-off fetches; prefer `consume` for ongoing work.
+/// one-off fetches; prefer `start_consumer` for ongoing work.
 pub fn get(channel: Channel, queue: String) -> Result(String, WrenError) {
   ffi_get(channel, queue)
   |> result.map_error(ChannelFailed)
-}
-
-// ===========================================================================
-// Consuming
-// ===========================================================================
-
-/// Subscribe to a queue. Each delivery is passed to `handler`, and settled
-/// with the broker according to the `Confirmation` it returns.
-pub fn consume(
-  channel: Channel,
-  queue: String,
-  handler: fn(Message) -> Confirmation,
-) -> Result(Consumer, WrenError) {
-  ffi_consume(channel, queue, handler)
-  |> result.map_error(ChannelFailed)
-}
-
-/// Stop a running consumer.
-pub fn stop(consumer: Consumer) -> Nil {
-  ffi_stop(consumer)
 }
 
 /// Close a channel. Safe to call even if already closed.
@@ -134,7 +120,94 @@ pub fn close_connection(connection: Connection) -> Nil {
 }
 
 // ===========================================================================
-// Demo — a live subscription that handles real deliveries.
+// Consumer — a supervised OTP actor
+// ===========================================================================
+
+/// Internal actor state.
+type State {
+  State(channel: Channel, handler: fn(Message) -> Confirmation)
+}
+
+/// Internal actor messages, decoded from the raw AMQP mailbox.
+type Event {
+  Delivery(
+    tag: Int,
+    payload: String,
+    routing_key: String,
+    headers: List(#(String, String)),
+  )
+  Cancelled
+  Ignored
+}
+
+/// Start a supervised consumer on `queue`. Each delivery is passed to
+/// `handler`, then settled with the broker per the returned `Confirmation`.
+///
+/// The consumer runs under a one-for-one supervisor: if it crashes (or the
+/// broker cancels it) the runtime restarts it and re-subscribes.
+pub fn start_consumer(
+  channel: Channel,
+  queue: String,
+  handler: fn(Message) -> Confirmation,
+) -> Result(Consumer, WrenError) {
+  let builder = consumer_builder(channel, queue, handler)
+  let child = supervision.worker(fn() { actor.start(builder) })
+
+  static_supervisor.new(static_supervisor.OneForOne)
+  |> static_supervisor.add(child)
+  |> static_supervisor.start
+  |> result.map(fn(started) { Consumer(started.pid) })
+  |> result.replace_error(ChannelFailed("failed to start consumer supervisor"))
+}
+
+/// Stop a running consumer and its supervisor.
+///
+/// We unlink first so that tearing down the consumer doesn't send an exit
+/// signal back to the caller that started it.
+pub fn stop(consumer: Consumer) -> Nil {
+  process.unlink(consumer.supervisor)
+  process.kill(consumer.supervisor)
+}
+
+fn consumer_builder(
+  channel: Channel,
+  queue: String,
+  handler: fn(Message) -> Confirmation,
+) {
+  actor.new_with_initialiser(5000, fn(subject) {
+    // init runs in the actor's own process, so `self` is the consumer pid.
+    case ffi_subscribe(channel, queue, process.self()) {
+      Ok(_) -> {
+        let selector =
+          process.new_selector()
+          |> process.select_other(decode_event)
+        actor.initialised(State(channel:, handler:))
+        |> actor.selecting(selector)
+        |> actor.returning(subject)
+        |> Ok
+      }
+      Error(reason) -> Error(reason)
+    }
+  })
+  |> actor.on_message(handle_event)
+}
+
+fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
+  case event {
+    Delivery(tag, payload, routing_key, headers) -> {
+      let message = Message(payload:, routing_key:, headers:)
+      let confirmation = state.handler(message)
+      ffi_settle(state.channel, tag, confirmation)
+      actor.continue(state)
+    }
+    // Broker cancelled us: stop so the supervisor restarts and re-subscribes.
+    Cancelled -> actor.stop()
+    Ignored -> actor.continue(state)
+  }
+}
+
+// ===========================================================================
+// Demo — a supervised consumer handling real deliveries.
 // ===========================================================================
 
 pub fn main() -> Nil {
@@ -150,7 +223,7 @@ pub fn main() -> Nil {
       )
       Ack
     }
-    use consumer <- result.try(consume(channel, "wren_demo", handler))
+    use consumer <- result.try(start_consumer(channel, "wren_demo", handler))
 
     use _ <- result.try(publish(
       channel,
@@ -165,7 +238,7 @@ pub fn main() -> Nil {
       payload: "second message",
     ))
 
-    // Give the consumer a moment to process before we tear down.
+    // Give the supervised consumer a moment to process before tearing down.
     sleep(500)
     stop(consumer)
     close_channel(channel)
@@ -174,7 +247,7 @@ pub fn main() -> Nil {
   }
 
   case outcome {
-    Ok(_) -> io.println("✅ consumer demo complete")
+    Ok(_) -> io.println("✅ supervised consumer demo complete")
     Error(error) -> io.println("❌ " <> describe(error))
   }
 }
@@ -215,15 +288,18 @@ fn ffi_publish(
 @external(erlang, "wren_ffi", "get")
 fn ffi_get(channel: Channel, queue: String) -> Result(String, String)
 
-@external(erlang, "wren_ffi", "consume")
-fn ffi_consume(
+@external(erlang, "wren_ffi", "subscribe")
+fn ffi_subscribe(
   channel: Channel,
   queue: String,
-  handler: fn(Message) -> Confirmation,
-) -> Result(Consumer, String)
+  pid: Pid,
+) -> Result(Nil, String)
 
-@external(erlang, "wren_ffi", "stop")
-fn ffi_stop(consumer: Consumer) -> Nil
+@external(erlang, "wren_ffi", "settle")
+fn ffi_settle(channel: Channel, tag: Int, confirmation: Confirmation) -> Nil
+
+@external(erlang, "wren_ffi", "decode_event")
+fn decode_event(message: Dynamic) -> Event
 
 @external(erlang, "wren_ffi", "sleep")
 fn sleep(milliseconds: Int) -> Nil
