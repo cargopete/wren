@@ -3,7 +3,12 @@
 -export([
     connect/4,
     open_channel/1,
-    declare_queue/2,
+    declare_queue_full/6,
+    declare_exchange/7,
+    bind_queue/4,
+    unbind_queue/4,
+    delete_queue/2,
+    delete_exchange/2,
     purge_queue/2,
     publish/4,
     publish_full/9,
@@ -39,15 +44,78 @@ open_channel(Connection) ->
         {error, Reason} -> {error, fmt(Reason)}
     end.
 
-declare_queue(Channel, Queue) ->
-    %% RabbitMQ 4.x forbids transient queues by default, so declare durable.
-    Declare = #'queue.declare'{queue = Queue, durable = true},
+declare_queue_full(Channel, Queue, Durable, Exclusive, AutoDelete, Arguments) ->
+    Declare = #'queue.declare'{
+        queue = Queue,
+        durable = Durable,
+        exclusive = Exclusive,
+        auto_delete = AutoDelete,
+        arguments = to_amqp_args(Arguments)
+    },
     try amqp_channel:call(Channel, Declare) of
         #'queue.declare_ok'{} -> {ok, nil};
         Other -> {error, fmt(Other)}
     catch
         Class:Reason -> {error, fmt({Class, Reason})}
     end.
+
+declare_exchange(Channel, Exchange, Type, Durable, AutoDelete, Internal, Arguments) ->
+    Declare = #'exchange.declare'{
+        exchange = Exchange,
+        type = Type,
+        durable = Durable,
+        auto_delete = AutoDelete,
+        internal = Internal,
+        arguments = to_amqp_args(Arguments)
+    },
+    try amqp_channel:call(Channel, Declare) of
+        #'exchange.declare_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+bind_queue(Channel, Queue, Exchange, RoutingKey) ->
+    Bind = #'queue.bind'{queue = Queue, exchange = Exchange, routing_key = RoutingKey},
+    try amqp_channel:call(Channel, Bind) of
+        #'queue.bind_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+unbind_queue(Channel, Queue, Exchange, RoutingKey) ->
+    Unbind = #'queue.unbind'{queue = Queue, exchange = Exchange, routing_key = RoutingKey},
+    try amqp_channel:call(Channel, Unbind) of
+        #'queue.unbind_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+delete_queue(Channel, Queue) ->
+    try amqp_channel:call(Channel, #'queue.delete'{queue = Queue}) of
+        #'queue.delete_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+delete_exchange(Channel, Exchange) ->
+    try amqp_channel:call(Channel, #'exchange.delete'{exchange = Exchange}) of
+        #'exchange.delete_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+%% Convert Gleam `Arg` values into AMQP `{Name, Type, Value}` field-table tuples.
+to_amqp_args(Arguments) ->
+    [to_amqp_arg(Key, Arg) || {Key, Arg} <- Arguments].
+
+to_amqp_arg(Key, {int_arg, Value}) -> {Key, long, Value};
+to_amqp_arg(Key, {string_arg, Value}) -> {Key, longstr, Value};
+to_amqp_arg(Key, {bool_arg, Value}) -> {Key, bool, Value}.
 
 %% Remove all ready messages from a queue. Handy for deterministic tests.
 purge_queue(Channel, Queue) ->

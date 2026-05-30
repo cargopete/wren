@@ -180,6 +180,127 @@ pub fn publish_encoded_typed_round_trip_test() {
 }
 
 // ---------------------------------------------------------------------------
+// Topology — exchanges, bindings, arguments, deletes
+// ---------------------------------------------------------------------------
+
+pub fn exchange_binding_routes_to_queue_test() {
+  let #(connection, channel) = open()
+  let assert Ok(_) =
+    wren.declare_exchange(
+      channel,
+      "wren_test_ex",
+      wren.Topic,
+      wren.exchange_options(),
+    )
+  fresh_queue(channel, "wren_test_bound")
+  let assert Ok(_) =
+    wren.bind_queue(
+      channel,
+      queue: "wren_test_bound",
+      exchange: "wren_test_ex",
+      routing_key: "orders.*",
+    )
+
+  // `orders.created` matches the `orders.*` binding.
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "wren_test_ex",
+      routing_key: "orders.created",
+      payload: "via topic",
+    )
+  let assert Ok(payload) = wren.get(channel, "wren_test_bound")
+  assert payload == "via topic"
+
+  let assert Ok(_) = wren.delete_exchange(channel, "wren_test_ex")
+  wren.close_connection(connection)
+}
+
+pub fn unbind_stops_routing_test() {
+  let #(connection, channel) = open()
+  let assert Ok(_) =
+    wren.declare_exchange(
+      channel,
+      "wren_test_unbind_ex",
+      wren.Direct,
+      wren.exchange_options(),
+    )
+  fresh_queue(channel, "wren_test_unbind_q")
+  let assert Ok(_) =
+    wren.bind_queue(
+      channel,
+      queue: "wren_test_unbind_q",
+      exchange: "wren_test_unbind_ex",
+      routing_key: "k",
+    )
+  let assert Ok(_) =
+    wren.unbind_queue(
+      channel,
+      queue: "wren_test_unbind_q",
+      exchange: "wren_test_unbind_ex",
+      routing_key: "k",
+    )
+
+  // With the binding gone, the message has nowhere to land.
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "wren_test_unbind_ex",
+      routing_key: "k",
+      payload: "orphan",
+    )
+  assert result.is_error(wren.get(channel, "wren_test_unbind_q"))
+
+  let assert Ok(_) = wren.delete_exchange(channel, "wren_test_unbind_ex")
+  wren.close_connection(connection)
+}
+
+pub fn queue_message_ttl_argument_takes_effect_test() {
+  let #(connection, channel) = open()
+  // An x-message-ttl of 100ms means messages self-destruct if not consumed.
+  let options =
+    wren.QueueOptions(..wren.queue_options(), arguments: [
+      #("x-message-ttl", wren.IntArg(100)),
+    ])
+  let assert Ok(_) = wren.declare_queue_with(channel, "wren_test_ttl", options)
+  let assert Ok(_) = wren.purge_queue(channel, "wren_test_ttl")
+
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_test_ttl",
+      payload: "ephemeral",
+    )
+  // Outlive the TTL, then confirm the broker discarded it.
+  process.sleep(400)
+  assert result.is_error(wren.get(channel, "wren_test_ttl"))
+
+  wren.close_connection(connection)
+}
+
+pub fn delete_queue_and_exchange_test() {
+  let #(connection, channel) = open()
+
+  let assert Ok(_) = wren.declare_queue(channel, "wren_test_del_q")
+  let assert Ok(_) = wren.delete_queue(channel, "wren_test_del_q")
+  // Re-declaring cleanly proves the delete landed.
+  let assert Ok(_) = wren.declare_queue(channel, "wren_test_del_q")
+  let assert Ok(_) = wren.delete_queue(channel, "wren_test_del_q")
+
+  let assert Ok(_) =
+    wren.declare_exchange(
+      channel,
+      "wren_test_del_ex",
+      wren.Fanout,
+      wren.exchange_options(),
+    )
+  let assert Ok(_) = wren.delete_exchange(channel, "wren_test_del_ex")
+
+  wren.close_connection(connection)
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 

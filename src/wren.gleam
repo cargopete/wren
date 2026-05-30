@@ -74,6 +74,67 @@ pub type Confirmation {
   DeadLetter
 }
 
+/// The routing behaviour of an exchange.
+pub type ExchangeType {
+  /// Exact routing-key match.
+  Direct
+  /// Broadcast to every bound queue.
+  Fanout
+  /// Wildcard routing-key match (`*` / `#`).
+  Topic
+  /// Match on message headers rather than routing key.
+  Headers
+}
+
+/// A typed value for an AMQP argument (the `x-*` settings on queues, exchanges
+/// and bindings — e.g. `x-message-ttl`, `x-dead-letter-exchange`).
+pub type Arg {
+  IntArg(Int)
+  StringArg(String)
+  BoolArg(Bool)
+}
+
+/// Settings for declaring a queue. Build with `queue_options`.
+pub type QueueOptions {
+  QueueOptions(
+    durable: Bool,
+    exclusive: Bool,
+    auto_delete: Bool,
+    arguments: List(#(String, Arg)),
+  )
+}
+
+/// Durable, non-exclusive, non-auto-delete queue with no extra arguments —
+/// the sensible default. Refine the record fields as needed.
+pub fn queue_options() -> QueueOptions {
+  QueueOptions(
+    durable: True,
+    exclusive: False,
+    auto_delete: False,
+    arguments: [],
+  )
+}
+
+/// Settings for declaring an exchange. Build with `exchange_options`.
+pub type ExchangeOptions {
+  ExchangeOptions(
+    durable: Bool,
+    auto_delete: Bool,
+    internal: Bool,
+    arguments: List(#(String, Arg)),
+  )
+}
+
+/// Durable, non-auto-delete, non-internal exchange with no extra arguments.
+pub fn exchange_options() -> ExchangeOptions {
+  ExchangeOptions(
+    durable: True,
+    auto_delete: False,
+    internal: False,
+    arguments: [],
+  )
+}
+
 /// Connection settings. Build via `default_config` and override as needed.
 pub type Config {
   Config(host: String, port: Int, username: String, password: String)
@@ -100,10 +161,91 @@ pub fn open_channel(connection: Connection) -> Result(Channel, WrenError) {
   |> result.map_error(ChannelFailed)
 }
 
-/// Declare a durable queue (idempotent).
+/// Declare a durable queue with default options (idempotent).
 pub fn declare_queue(channel: Channel, name: String) -> Result(Nil, WrenError) {
-  ffi_declare_queue(channel, name)
+  declare_queue_with(channel, name, queue_options())
+}
+
+/// Declare a queue with explicit options, including AMQP `x-*` arguments.
+pub fn declare_queue_with(
+  channel: Channel,
+  name: String,
+  options: QueueOptions,
+) -> Result(Nil, WrenError) {
+  ffi_declare_queue_full(
+    channel,
+    name,
+    options.durable,
+    options.exclusive,
+    options.auto_delete,
+    options.arguments,
+  )
   |> result.map_error(ChannelFailed)
+}
+
+/// Declare an exchange of the given type (idempotent).
+pub fn declare_exchange(
+  channel: Channel,
+  name: String,
+  exchange_type: ExchangeType,
+  options: ExchangeOptions,
+) -> Result(Nil, WrenError) {
+  ffi_declare_exchange(
+    channel,
+    name,
+    exchange_type_name(exchange_type),
+    options.durable,
+    options.auto_delete,
+    options.internal,
+    options.arguments,
+  )
+  |> result.map_error(ChannelFailed)
+}
+
+/// Bind a queue to an exchange with a routing key.
+pub fn bind_queue(
+  channel: Channel,
+  queue queue: String,
+  exchange exchange: String,
+  routing_key routing_key: String,
+) -> Result(Nil, WrenError) {
+  ffi_bind_queue(channel, queue, exchange, routing_key)
+  |> result.map_error(ChannelFailed)
+}
+
+/// Remove a binding between a queue and an exchange.
+pub fn unbind_queue(
+  channel: Channel,
+  queue queue: String,
+  exchange exchange: String,
+  routing_key routing_key: String,
+) -> Result(Nil, WrenError) {
+  ffi_unbind_queue(channel, queue, exchange, routing_key)
+  |> result.map_error(ChannelFailed)
+}
+
+/// Delete a queue (and any messages still in it).
+pub fn delete_queue(channel: Channel, name: String) -> Result(Nil, WrenError) {
+  ffi_delete_queue(channel, name)
+  |> result.map_error(ChannelFailed)
+}
+
+/// Delete an exchange.
+pub fn delete_exchange(
+  channel: Channel,
+  name: String,
+) -> Result(Nil, WrenError) {
+  ffi_delete_exchange(channel, name)
+  |> result.map_error(ChannelFailed)
+}
+
+fn exchange_type_name(exchange_type: ExchangeType) -> String {
+  case exchange_type {
+    Direct -> "direct"
+    Fanout -> "fanout"
+    Topic -> "topic"
+    Headers -> "headers"
+  }
 }
 
 /// Remove all ready messages from a queue, returning nothing.
@@ -492,8 +634,48 @@ fn ffi_connect(
 @external(erlang, "wren_ffi", "open_channel")
 fn ffi_open_channel(connection: Connection) -> Result(Channel, String)
 
-@external(erlang, "wren_ffi", "declare_queue")
-fn ffi_declare_queue(channel: Channel, name: String) -> Result(Nil, String)
+@external(erlang, "wren_ffi", "declare_queue_full")
+fn ffi_declare_queue_full(
+  channel: Channel,
+  name: String,
+  durable: Bool,
+  exclusive: Bool,
+  auto_delete: Bool,
+  arguments: List(#(String, Arg)),
+) -> Result(Nil, String)
+
+@external(erlang, "wren_ffi", "declare_exchange")
+fn ffi_declare_exchange(
+  channel: Channel,
+  name: String,
+  exchange_type: String,
+  durable: Bool,
+  auto_delete: Bool,
+  internal: Bool,
+  arguments: List(#(String, Arg)),
+) -> Result(Nil, String)
+
+@external(erlang, "wren_ffi", "bind_queue")
+fn ffi_bind_queue(
+  channel: Channel,
+  queue: String,
+  exchange: String,
+  routing_key: String,
+) -> Result(Nil, String)
+
+@external(erlang, "wren_ffi", "unbind_queue")
+fn ffi_unbind_queue(
+  channel: Channel,
+  queue: String,
+  exchange: String,
+  routing_key: String,
+) -> Result(Nil, String)
+
+@external(erlang, "wren_ffi", "delete_queue")
+fn ffi_delete_queue(channel: Channel, name: String) -> Result(Nil, String)
+
+@external(erlang, "wren_ffi", "delete_exchange")
+fn ffi_delete_exchange(channel: Channel, name: String) -> Result(Nil, String)
 
 @external(erlang, "wren_ffi", "publish")
 fn ffi_publish(

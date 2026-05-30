@@ -17,6 +17,7 @@ built on the BEAM and OTP.
 - ✅ Producer options — exchange, routing key, headers, priority, expiration, `mandatory`
 - ✅ A `Codec` abstraction with a JSON codec, plus typed `publish_encoded` / `decode_message`
 - ✅ Router-style consumer — dispatch by message `kind` to typed handlers, with a fallback
+- ✅ Topology management — exchanges, bindings, deletes, and `x-*` queue/exchange arguments
 - 🚧 Retry/dead-letter infrastructure, connection recovery
 
 See [`ROADMAP.md`](./ROADMAP.md) for the path to feature parity with a

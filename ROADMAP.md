@@ -85,21 +85,24 @@ _Parity target:_ `consumer/router.rs`, `consumer/builder.rs`, `consumer/handler.
 
 ---
 
-## Milestone 4 — Topology management 🎯 (next)
+## Milestone 4 — Topology management ✅
 
 Declare the world properly. bunnyhop's `QueueManager`.
 
-- [ ] `declare_exchange` with `ExchangeType` (`Direct`/`Fanout`/`Topic`/`Headers`)
-- [ ] `bind_queue` / `unbind_queue` (queue ↔ exchange ↔ routing key)
-- [ ] `delete_queue` / `delete_exchange` (with `if_unused` / `if_empty`)
-- [ ] Queue/exchange **arguments** (`x-*`) — durable/exclusive/auto-delete + arbitrary args
-- [ ] Idempotent declares that tolerate "exists with different properties"
+- [x] `declare_exchange` with `ExchangeType` (`Direct`/`Fanout`/`Topic`/`Headers`)
+- [x] `bind_queue` / `unbind_queue` (queue ↔ exchange ↔ routing key)
+- [x] `delete_queue` / `delete_exchange`
+- [x] Queue/exchange **arguments** (`x-*`) via a typed `Arg` (`IntArg`/`StringArg`/`BoolArg`);
+  `QueueOptions` / `ExchangeOptions` for durable/exclusive/auto-delete/internal
+- [x] `declare_queue` now delegates to `declare_queue_with` (single declare path)
 
 _Parity target:_ `implementations/amqprs/queue_manager.rs`, `config.rs` (Queue/Exchange/Binding).
 
+_Deferred:_ `if_unused` / `if_empty` delete flags (add when a use case needs them).
+
 ---
 
-## Milestone 5 — Retry policy + metadata ❌
+## Milestone 5 — Retry policy + metadata 🎯 (next)
 
 The brains of retrying. bunnyhop's `retry.rs`.
 
