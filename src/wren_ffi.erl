@@ -12,7 +12,7 @@
     delete_exchange_full/3,
     purge_queue/2,
     publish/4,
-    publish_full/10,
+    publish_full/11,
     enable_confirms/1,
     wait_for_confirms/2,
     get/2,
@@ -180,13 +180,13 @@ publish(Channel, Exchange, RoutingKey, Payload) ->
 %% Publish with the full set of producer options. Optional fields arrive from
 %% Gleam as `none` | `{some, Value}`; bools as `true` | `false`; headers as a
 %% list of `{Key, Value}` binaries.
-publish_full(Channel, Exchange, RoutingKey, Payload, Headers, Priority, Expiration, Mandatory, ContentType, Persistent) ->
+publish_full(Channel, Exchange, RoutingKey, Payload, Headers, Priority, Expiration, Mandatory, ContentType, Persistent, Properties) ->
     Publish = #'basic.publish'{
         exchange = Exchange,
         routing_key = RoutingKey,
         mandatory = Mandatory
     },
-    Props =
+    Base =
         lists:foldl(
             fun(Apply, Acc) -> Apply(Acc) end,
             #'P_basic'{headers = build_headers(Headers)},
@@ -197,6 +197,7 @@ publish_full(Channel, Exchange, RoutingKey, Payload, Headers, Priority, Expirati
                 with_persistence(Persistent)
             ]
         ),
+    Props = lists:foldl(fun apply_property/2, Base, Properties),
     try amqp_channel:cast(Channel, Publish, #amqp_msg{props = Props, payload = Payload}) of
         ok -> {ok, nil};
         Other -> {error, fmt(Other)}
@@ -244,6 +245,16 @@ with_expiration({some, Millis}) -> fun(Props) -> Props#'P_basic'{expiration = in
 %% leaving it unset means transient.
 with_persistence(false) -> fun(Props) -> Props end;
 with_persistence(true) -> fun(Props) -> Props#'P_basic'{delivery_mode = 2} end.
+
+%% Apply a typed AMQP message property (from Gleam's `Property`) to P_basic.
+apply_property({correlation_id, V}, Props) -> Props#'P_basic'{correlation_id = V};
+apply_property({reply_to, V}, Props) -> Props#'P_basic'{reply_to = V};
+apply_property({message_id, V}, Props) -> Props#'P_basic'{message_id = V};
+apply_property({message_type, V}, Props) -> Props#'P_basic'{type = V};
+apply_property({user_id, V}, Props) -> Props#'P_basic'{user_id = V};
+apply_property({app_id, V}, Props) -> Props#'P_basic'{app_id = V};
+apply_property({content_encoding, V}, Props) -> Props#'P_basic'{content_encoding = V};
+apply_property({timestamp, V}, Props) -> Props#'P_basic'{timestamp = V}.
 
 %% Blocking-ish poll over basic.get; a primitive kept for one-off fetches.
 get(Channel, Queue) ->
@@ -336,10 +347,12 @@ settle(Channel, Tag, dead_letter) ->
 %% Convert a raw AMQP mailbox message into a Gleam `Event`:
 %%   {delivery, Tag, Payload, RoutingKey, Headers} | cancelled | ignored
 decode_event(
-    {#'basic.deliver'{delivery_tag = Tag, routing_key = RoutingKey},
+    {#'basic.deliver'{delivery_tag = Tag, routing_key = RoutingKey, redelivered = Redelivered},
      #amqp_msg{payload = Payload, props = Props}}
 ) ->
-    {delivery, Tag, Payload, RoutingKey, extract_headers(Props)};
+    {delivery, Tag, Payload, RoutingKey, extract_headers(Props),
+     prop_value(Props#'P_basic'.correlation_id),
+     prop_value(Props#'P_basic'.reply_to), Redelivered};
 decode_event(#'basic.cancel'{}) ->
     cancelled;
 %% A monitored connection going down arrives as a standard `DOWN` message.
@@ -347,6 +360,10 @@ decode_event({'DOWN', _Ref, process, _Pid, _Reason}) ->
     connection_down;
 decode_event(_Other) ->
     ignored.
+
+%% Map an optional AMQP property field to Gleam's `Option`.
+prop_value(undefined) -> none;
+prop_value(Value) -> {some, Value}.
 
 %% Extract string-valued headers as a list of {Key, Value} binaries.
 extract_headers(#'P_basic'{headers = undefined}) ->

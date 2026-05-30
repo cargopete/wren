@@ -273,6 +273,42 @@ _Parity target:_ `config.rs::ConsumerConfig`.
 _Note:_ the producer `immediate` flag is intentionally omitted — it was removed
 from RabbitMQ years ago; bunnyhop carries a dead field.
 
+## Milestone 18 — AMQP message properties ✅
+
+Found in a deeper audit: bunnyhop's `produce_with_properties` exposes the full
+`BasicProperties`; wren only had a subset.
+
+- [x] `Property` (`correlation_id`, `reply_to`, `message_id`, `type`, `user_id`,
+  `app_id`, `content_encoding`, `timestamp`) on `PublishOptions` + `with_*` builders
+- [x] `Message` now also carries received `correlation_id` / `reply_to` /
+  `redelivered`, so request/reply (RPC) works end to end
+
+_Parity target:_ `producer.rs::produce_with_properties`, `IncomingMessage`.
+
+## Milestone 19 — Batch / multi-target producer ✅
+
+- [x] `Target`, `publish_batch` (per-message failure capture via `BatchResult`),
+  `publish_to_targets` (one message → many), `publish_batch_with_retry`
+
+_Parity target:_ `producer.rs::{MultiQueueProducer, TargetProducer}`.
+
+---
+
+## Known remaining gaps (post-audit)
+
+An exhaustive diff of bunnyhop's public surface leaves these — all niche or
+intentionally deferred. The one a user might actually hit is raw-byte payloads.
+
+- **Raw byte (`BitArray`) payloads** — wren is `String`-only (fine for UTF-8/JSON,
+  not for arbitrary binary like protobuf/msgpack). The honest "real" gap.
+- **Passive declare** (`attach_to_queue`) — check a queue exists without creating it.
+- **Polling-loop consumer** (`start_consuming_with_polling`) — wren has push consumers + `get`.
+- **Config validation** (`validate`) — wren's `config_from_lookup` is lenient.
+- **Pool idle/stale-channel reaping** — deferred (see M12).
+- **`next_publish_seqno`** — confirm sequence numbers (niche).
+- **`key()` / `make_span`** — a partition-key abstraction and Rust `tracing`
+  spans; not RabbitMQ-native / not applicable on the BEAM.
+
 ---
 
 ## Explicit departures from bunnyhop

@@ -43,6 +43,12 @@ pub type Message {
     payload: String,
     routing_key: String,
     headers: List(#(String, String)),
+    /// The AMQP `correlation_id` property, if set (used to pair RPC replies).
+    correlation_id: Option(String),
+    /// The AMQP `reply_to` property, if set (where to send an RPC reply).
+    reply_to: Option(String),
+    /// True if the broker has delivered this message before (e.g. after a requeue).
+    redelivered: Bool,
   )
 }
 
@@ -522,6 +528,20 @@ pub fn publish(
 ///
 /// Mirrors the producer surface of the Rust `bunnyhop` crate: routing,
 /// headers, priority, per-message expiration, and the `mandatory` flag.
+/// A standard AMQP message property. Set these on `PublishOptions` via the
+/// `with_*` helpers; `correlation_id` + `reply_to` are the basis of request/reply.
+pub type Property {
+  CorrelationId(String)
+  ReplyTo(String)
+  MessageId(String)
+  MessageType(String)
+  UserId(String)
+  AppId(String)
+  ContentEncoding(String)
+  /// A POSIX timestamp (seconds).
+  Timestamp(Int)
+}
+
 pub type PublishOptions {
   PublishOptions(
     /// Exchange to publish to. `""` is the default exchange (route by queue name).
@@ -541,6 +561,8 @@ pub type PublishOptions {
     /// Persist the message (delivery mode 2) so it survives a broker restart on
     /// a durable queue.
     persistent: Bool,
+    /// Standard AMQP message properties (correlation id, reply-to, …).
+    properties: List(Property),
   )
 }
 
@@ -557,6 +579,7 @@ pub fn publish_options() -> PublishOptions {
     mandatory: False,
     content_type: None,
     persistent: False,
+    properties: [],
   )
 }
 
@@ -625,6 +648,45 @@ pub fn with_persistence(options: PublishOptions) -> PublishOptions {
   PublishOptions(..options, persistent: True)
 }
 
+/// Add a raw AMQP message `Property`.
+pub fn with_property(
+  options: PublishOptions,
+  property: Property,
+) -> PublishOptions {
+  PublishOptions(..options, properties: [property, ..options.properties])
+}
+
+/// Set the correlation id — pair a reply with its request (the heart of RPC).
+pub fn with_correlation_id(
+  options: PublishOptions,
+  id: String,
+) -> PublishOptions {
+  with_property(options, CorrelationId(id))
+}
+
+/// Set the reply-to queue — where a responder should send its answer.
+pub fn with_reply_to(options: PublishOptions, queue: String) -> PublishOptions {
+  with_property(options, ReplyTo(queue))
+}
+
+/// Set the message id.
+pub fn with_message_id(options: PublishOptions, id: String) -> PublishOptions {
+  with_property(options, MessageId(id))
+}
+
+/// Set the application message type.
+pub fn with_message_type(
+  options: PublishOptions,
+  message_type: String,
+) -> PublishOptions {
+  with_property(options, MessageType(message_type))
+}
+
+/// Set the timestamp (POSIX seconds).
+pub fn with_timestamp(options: PublishOptions, seconds: Int) -> PublishOptions {
+  with_property(options, Timestamp(seconds))
+}
+
 /// Publish a message with the full set of `PublishOptions`.
 pub fn publish_with_options(
   channel: Channel,
@@ -642,6 +704,7 @@ pub fn publish_with_options(
     options.mandatory,
     options.content_type,
     options.persistent,
+    options.properties,
   )
   |> result.map_error(ChannelFailed)
 }
@@ -669,6 +732,118 @@ pub fn publish_confirmed(
     Ok(TimedOut) -> Error(ChannelFailed("publish confirmation timed out"))
     Error(reason) -> Error(ChannelFailed(reason))
   }
+}
+
+// ===========================================================================
+// Batch / multi-target publishing
+// ===========================================================================
+
+/// A publish destination: an exchange and routing key.
+pub type Target {
+  Target(exchange: String, routing_key: String)
+}
+
+/// A target on the default exchange, routing by queue name.
+pub fn queue_target(queue: String) -> Target {
+  Target(exchange: "", routing_key: queue)
+}
+
+/// One message that couldn't be published, with the reason.
+pub type BatchFailure {
+  BatchFailure(target: Target, payload: String, error: WrenError)
+}
+
+/// The outcome of a batch publish: how many succeeded, and which failed.
+pub type BatchResult {
+  BatchResult(published: Int, failures: List(BatchFailure))
+}
+
+/// Publish each `#(Target, payload)` in turn (order preserved), collecting
+/// per-message failures rather than stopping at the first. The target overrides
+/// the options' exchange/routing key. For broker-acknowledged delivery, enable
+/// confirms on the channel and check the result's `failures`.
+pub fn publish_batch(
+  channel: Channel,
+  messages: List(#(Target, String)),
+  options: PublishOptions,
+) -> BatchResult {
+  let failures =
+    list.fold(messages, [], fn(acc, message) {
+      let #(target, payload) = message
+      case publish_to_target(channel, target, payload, options) {
+        Ok(_) -> acc
+        Error(error) -> [BatchFailure(target:, payload:, error:), ..acc]
+      }
+    })
+    |> list.reverse
+  BatchResult(
+    published: list.length(messages) - list.length(failures),
+    failures:,
+  )
+}
+
+/// Publish one `payload` to several targets.
+pub fn publish_to_targets(
+  channel: Channel,
+  payload: String,
+  targets: List(Target),
+  options: PublishOptions,
+) -> BatchResult {
+  publish_batch(
+    channel,
+    list.map(targets, fn(target) { #(target, payload) }),
+    options,
+  )
+}
+
+/// Like `publish_batch`, but re-publishes failures up to `max_attempts` times.
+pub fn publish_batch_with_retry(
+  channel: Channel,
+  messages: List(#(Target, String)),
+  options: PublishOptions,
+  max_attempts: Int,
+) -> BatchResult {
+  retry_batch(channel, messages, options, int.max(max_attempts, 1), 0)
+}
+
+fn retry_batch(
+  channel: Channel,
+  messages: List(#(Target, String)),
+  options: PublishOptions,
+  attempts_left: Int,
+  published_so_far: Int,
+) -> BatchResult {
+  let result = publish_batch(channel, messages, options)
+  let published = published_so_far + result.published
+  case result.failures, attempts_left <= 1 {
+    [], _ -> BatchResult(published:, failures: [])
+    _, True -> BatchResult(published:, failures: result.failures)
+    failures, False ->
+      retry_batch(
+        channel,
+        list.map(failures, fn(failure) { #(failure.target, failure.payload) }),
+        options,
+        attempts_left - 1,
+        published,
+      )
+  }
+}
+
+fn publish_to_target(
+  channel: Channel,
+  target: Target,
+  payload: String,
+  options: PublishOptions,
+) -> Result(Nil, WrenError) {
+  publish_with_options(
+    channel,
+    payload,
+    PublishOptions(
+      ..options,
+      exchange: target.exchange,
+      routing_key: target.routing_key,
+    ),
+  )
 }
 
 /// Encode a typed `value` with `codec` and publish it with the given options.
@@ -1126,6 +1301,9 @@ type Event {
     payload: String,
     routing_key: String,
     headers: List(#(String, String)),
+    correlation_id: Option(String),
+    reply_to: Option(String),
+    redelivered: Bool,
   )
   Cancelled
   /// A monitored connection died (only seen by recoverable consumers).
@@ -1284,8 +1462,24 @@ fn do_subscribe(
 
 fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
   case event {
-    Delivery(tag, payload, routing_key, headers) -> {
-      let message = Message(payload:, routing_key:, headers:)
+    Delivery(
+      tag,
+      payload,
+      routing_key,
+      headers,
+      correlation_id,
+      reply_to,
+      redelivered,
+    ) -> {
+      let message =
+        Message(
+          payload:,
+          routing_key:,
+          headers:,
+          correlation_id:,
+          reply_to:,
+          redelivered:,
+        )
       process_delivery(
         state.channel,
         state.retry,
@@ -1777,8 +1971,24 @@ fn handle_recoverable_event(
   event: Event,
 ) -> actor.Next(RecoverableState, Event) {
   case event {
-    Delivery(tag, payload, routing_key, headers) -> {
-      let message = Message(payload:, routing_key:, headers:)
+    Delivery(
+      tag,
+      payload,
+      routing_key,
+      headers,
+      correlation_id,
+      reply_to,
+      redelivered,
+    ) -> {
+      let message =
+        Message(
+          payload:,
+          routing_key:,
+          headers:,
+          correlation_id:,
+          reply_to:,
+          redelivered:,
+        )
       process_delivery(
         state.channel,
         state.options.retry,
@@ -1953,6 +2163,7 @@ fn ffi_publish_full(
   mandatory: Bool,
   content_type: Option(String),
   persistent: Bool,
+  properties: List(Property),
 ) -> Result(Nil, String)
 
 @external(erlang, "wren_ffi", "enable_confirms")

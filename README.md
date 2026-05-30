@@ -31,13 +31,14 @@ And, since v0.2:
 - ✅ Connection pool (`start_pool`) with round-robin channel handout and `pool_stats`
 - ✅ Active `health_check`, kind-based producer (`publish_for_kind`), TLS, and topology guards
 - ✅ Consumer subscribe options — auto-ack, exclusive, no-local, consumer tag, subscription arguments
+- ✅ Full AMQP message properties (`correlation_id`/`reply_to` for RPC, …) and batch / multi-target publishing
 
-This brings wren to **feature parity** with the production `bunnyhop` crate.
-The only bunnyhop features expressed differently are deliberate, idiomatic-Gleam
-choices — no axum-style extractors, dependency injection, or derive macros;
-handlers take an explicit `Message` and codecs are values. (The one omitted flag,
-producer `immediate`, was removed from RabbitMQ years ago.) See the roadmap's
-"Explicit departures" for the full list.
+wren covers the **entire core and the vast majority** of the production `bunnyhop`
+crate's surface. A few bunnyhop features are expressed differently by deliberate,
+idiomatic-Gleam choice — no axum-style extractors, dependency injection, or derive
+macros; handlers take an explicit `Message` and codecs are values. A handful of
+genuinely minor gaps remain (raw-byte payloads, passive declare, a polling
+consumer); see the roadmap's "Known remaining gaps" for the honest list.
 
 See [`ROADMAP.md`](./ROADMAP.md) for how each piece maps to a production AMQP
 client, and [`CHANGELOG.md`](./CHANGELOG.md) for what landed when.

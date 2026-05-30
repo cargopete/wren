@@ -1144,3 +1144,98 @@ pub fn consumer_with_tag_and_arguments_subscribes_test() {
   wren.stop(consumer)
   wren.close_connection(connection)
 }
+
+// ---------------------------------------------------------------------------
+// Message properties (M18) + batch publishing (M19)
+// ---------------------------------------------------------------------------
+
+pub fn message_properties_round_trip_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_props")
+
+  let inbox = process.new_subject()
+  let handler = fn(message: wren.Message) -> wren.Confirmation {
+    process.send(inbox, message)
+    wren.Ack
+  }
+  let assert Ok(consumer) =
+    wren.start_consumer(channel, "wren_test_props", handler)
+
+  // The pair that makes RPC work: correlation id + reply-to.
+  let options =
+    wren.publish_options()
+    |> wren.route("wren_test_props")
+    |> wren.with_correlation_id("corr-1")
+    |> wren.with_reply_to("reply-queue")
+  let assert Ok(_) = wren.publish_with_options(channel, "ping", options)
+
+  let assert Ok(received) = process.receive(from: inbox, within: 5000)
+  assert received.correlation_id == option.Some("corr-1")
+  assert received.reply_to == option.Some("reply-queue")
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}
+
+pub fn publish_batch_delivers_to_each_target_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_batch_a")
+  fresh_queue(channel, "wren_test_batch_b")
+
+  let messages = [
+    #(wren.queue_target("wren_test_batch_a"), "to-a"),
+    #(wren.queue_target("wren_test_batch_b"), "to-b"),
+  ]
+  let result = wren.publish_batch(channel, messages, wren.publish_options())
+  assert result.published == 2
+  assert result.failures == []
+
+  let assert Ok(a) = wren.get(channel, "wren_test_batch_a")
+  assert a == "to-a"
+  let assert Ok(b) = wren.get(channel, "wren_test_batch_b")
+  assert b == "to-b"
+
+  wren.close_connection(connection)
+}
+
+pub fn publish_to_targets_fans_out_one_message_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_fan_a")
+  fresh_queue(channel, "wren_test_fan_b")
+
+  let targets = [
+    wren.queue_target("wren_test_fan_a"),
+    wren.queue_target("wren_test_fan_b"),
+  ]
+  let result =
+    wren.publish_to_targets(
+      channel,
+      "broadcast",
+      targets,
+      wren.publish_options(),
+    )
+  assert result.published == 2
+
+  let assert Ok(a) = wren.get(channel, "wren_test_fan_a")
+  assert a == "broadcast"
+  let assert Ok(b) = wren.get(channel, "wren_test_fan_b")
+  assert b == "broadcast"
+
+  wren.close_connection(connection)
+}
+
+pub fn publish_batch_with_retry_succeeds_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_batch_retry")
+
+  let messages = [
+    #(wren.queue_target("wren_test_batch_retry"), "m1"),
+    #(wren.queue_target("wren_test_batch_retry"), "m2"),
+  ]
+  let result =
+    wren.publish_batch_with_retry(channel, messages, wren.publish_options(), 3)
+  assert result.published == 2
+  assert result.failures == []
+
+  wren.close_connection(connection)
+}

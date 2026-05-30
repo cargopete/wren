@@ -4,9 +4,19 @@ All notable changes to wren are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
-## [0.2.1] — 2026-05-30
+## [0.2.2] — 2026-05-30
 
-Completes feature parity with `bunnyhop`.
+### Added
+
+- **AMQP message properties** — `Property` (`correlation_id`, `reply_to`,
+  `message_id`, `type`, `user_id`, `app_id`, `content_encoding`, `timestamp`) on
+  `PublishOptions` with `with_*` builders. `Message` now also exposes received
+  `correlation_id` / `reply_to` / `redelivered`, enabling request/reply (RPC).
+- **Batch / multi-target publishing** — `Target`, `publish_batch` (with
+  per-message `BatchResult` failures), `publish_to_targets`, and
+  `publish_batch_with_retry`.
+
+## [0.2.1] — 2026-05-30
 
 ### Added
 
@@ -77,6 +87,7 @@ The first cut: a complete, type-safe AMQP messaging core on the BEAM.
   an `on_connect` hook.
 - **Examples** — runnable `wren/examples/{router,retry,recovery}` and `wren/demo`.
 
+[0.2.2]: https://github.com/cargopete/wren/releases/tag/v0.2.2
 [0.2.1]: https://github.com/cargopete/wren/releases/tag/v0.2.1
 [0.2.0]: https://github.com/cargopete/wren/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cargopete/wren/releases/tag/v0.1.0
