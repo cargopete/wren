@@ -16,6 +16,8 @@ All notable changes to wren are recorded here. The format follows
 - **Concurrent processing** — `start_consumer_concurrent` and `with_concurrency`
   (recoverable) run up to N deliveries at once, each in its own process, bounded
   by the broker's prefetch.
+- **Connection pool** — `start_pool` opens N connections; `pool_channel` hands
+  out channels round-robin across them; `pool_size` / `close_pool`.
 
 ## [0.1.0] — Unreleased
 

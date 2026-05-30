@@ -211,16 +211,19 @@ _Parity target:_ `producer.rs::new_with_confirms`, `config.rs` (ProducerConfig p
 
 _Parity target:_ `config.rs` (`process_concurrently`, `max_concurrent_messages`).
 
-## Milestone 12 — Connection pooling 🎯 (next)
+## Milestone 12 — Connection pooling ✅
 
 One connection per consumer/client scales poorly under many consumers.
 
-- [ ] A pool owning N connections, handing out channels
-- [ ] Lifecycle: max connections, channels per connection, idle timeout, max lifetime
+- [x] A `Pool` actor owning N connections; `pool_channel` hands out channels round-robin
+- [x] `start_pool` / `pool_size` / `close_pool`
 
 _Parity target:_ `implementations/amqprs/connection.rs` (`ConnectionManager`, `PoolConfig`).
 
-## Milestone 13 — Connection stats + deeper health ❌
+_Deferred:_ idle-timeout / max-lifetime channel reaping (needs a reaper) — the
+pool holds connections until `close_pool`. Add if a workload needs churn control.
+
+## Milestone 13 — Connection stats + deeper health 🎯 (next)
 
 - [ ] Stats: channels, reconnection attempts, errors
 - [ ] Health check that actually exercises the channel (declare probe), not just liveness

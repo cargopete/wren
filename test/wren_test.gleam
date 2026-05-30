@@ -847,3 +847,34 @@ pub fn serial_consumer_runs_deliveries_in_one_process_test() {
   wren.stop(consumer)
   wren.close_connection(connection)
 }
+
+// ---------------------------------------------------------------------------
+// Connection pool
+// ---------------------------------------------------------------------------
+
+pub fn connection_pool_hands_out_working_channels_test() {
+  let assert Ok(pool) = wren.start_pool(test_config(), 2)
+  assert wren.pool_size(pool) == 2
+
+  // A channel from the pool behaves like any other.
+  let assert Ok(channel) = wren.pool_channel(pool)
+  let assert Ok(_) = wren.declare_queue(channel, "wren_test_pool")
+  let assert Ok(_) = wren.purge_queue(channel, "wren_test_pool")
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_test_pool",
+      payload: "pooled",
+    )
+  let assert Ok(payload) = wren.get(channel, "wren_test_pool")
+  assert payload == "pooled"
+  wren.close_channel(channel)
+
+  // A second checkout (round-robined to the other connection) works too.
+  let assert Ok(channel2) = wren.pool_channel(pool)
+  let assert Ok(_) = wren.declare_queue(channel2, "wren_test_pool")
+  wren.close_channel(channel2)
+
+  wren.close_pool(pool)
+}

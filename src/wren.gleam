@@ -641,6 +641,111 @@ pub fn close_client(client: Client) -> Nil {
 }
 
 // ===========================================================================
+// Connection pool — spread channels across several connections
+// ===========================================================================
+
+/// A pool of open connections. `pool_channel` hands out channels round-robin
+/// across them, so heavy channel use is spread over several connections rather
+/// than crammed onto one. Build with `start_pool`, tear down with `close_pool`.
+pub opaque type Pool {
+  Pool(requests: process.Subject(PoolRequest), size: Int)
+}
+
+type PoolRequest {
+  NextChannel(reply: process.Subject(Result(Channel, WrenError)))
+  CloseAll(reply: process.Subject(Nil))
+}
+
+type PoolState {
+  PoolState(connections: List(Connection), next: Int)
+}
+
+/// Open a pool of `size` connections (at least one).
+pub fn start_pool(config: Config, size: Int) -> Result(Pool, WrenError) {
+  let size = int.max(size, 1)
+  use connections <- result.try(open_connections(config, size, []))
+  case
+    actor.new(PoolState(connections:, next: 0))
+    |> actor.on_message(handle_pool_request)
+    |> actor.start
+  {
+    Ok(started) -> Ok(Pool(requests: started.data, size:))
+    Error(_) -> {
+      list.each(connections, close_connection)
+      Error(ChannelFailed("failed to start connection pool"))
+    }
+  }
+}
+
+/// Open a fresh channel on the pool's next connection (round-robin). Close it
+/// with `close_channel` when you're done.
+pub fn pool_channel(pool: Pool) -> Result(Channel, WrenError) {
+  process.call(pool.requests, 5000, NextChannel)
+}
+
+/// How many connections the pool holds.
+pub fn pool_size(pool: Pool) -> Int {
+  pool.size
+}
+
+/// Close every connection in the pool and stop it.
+pub fn close_pool(pool: Pool) -> Nil {
+  process.call(pool.requests, 5000, CloseAll)
+}
+
+fn open_connections(
+  config: Config,
+  remaining: Int,
+  acc: List(Connection),
+) -> Result(List(Connection), WrenError) {
+  case remaining {
+    0 -> Ok(list.reverse(acc))
+    _ ->
+      case connect(config) {
+        Ok(connection) ->
+          open_connections(config, remaining - 1, [connection, ..acc])
+        Error(error) -> {
+          // Roll back any connections opened so far.
+          list.each(acc, close_connection)
+          Error(error)
+        }
+      }
+  }
+}
+
+fn handle_pool_request(
+  state: PoolState,
+  request: PoolRequest,
+) -> actor.Next(PoolState, PoolRequest) {
+  case request {
+    NextChannel(reply) -> {
+      let connection = pick_connection(state.connections, state.next)
+      process.send(reply, open_channel(connection))
+      actor.continue(PoolState(..state, next: state.next + 1))
+    }
+    CloseAll(reply) -> {
+      list.each(state.connections, close_connection)
+      process.send(reply, Nil)
+      actor.stop()
+    }
+  }
+}
+
+fn pick_connection(connections: List(Connection), index: Int) -> Connection {
+  let assert Ok(connection) =
+    list_at(connections, index % list.length(connections))
+  connection
+}
+
+fn list_at(items: List(a), index: Int) -> Result(a, Nil) {
+  case items, index {
+    [item, ..], 0 -> Ok(item)
+    [_, ..rest], n -> list_at(rest, n - 1)
+    [], _ -> Error(Nil)
+  }
+}
+
+// ===========================================================================
 // Retry infrastructure — delay queues + dead-letter exchange
 // ===========================================================================
 
