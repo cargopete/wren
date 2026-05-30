@@ -24,6 +24,19 @@ broker. Pre-1.0, so the API may still shift, but the feature set is whole:
 - ✅ Connection recovery — self-healing consumer that reconnects with backoff, plus QoS prefetch
 - ✅ Client config & ergonomics — `config_from_env`, vhost/heartbeat/timeout, a `Client` front door
 
+And, since v0.2:
+
+- ✅ Publisher confirms (`publish_confirmed`) + persistent delivery (`with_persistence`)
+- ✅ Concurrent delivery processing, bounded by prefetch (`start_consumer_concurrent`)
+- ✅ Connection pool (`start_pool`) with round-robin channel handout and `pool_stats`
+- ✅ Active `health_check`, kind-based producer (`publish_for_kind`), TLS, and topology guards
+
+This brings wren to **capability parity** with the production `bunnyhop` crate.
+The only bunnyhop features expressed differently are deliberate, idiomatic-Gleam
+choices — no axum-style extractors, dependency injection, or derive macros;
+handlers take an explicit `Message` and codecs are values. See the roadmap's
+"Explicit departures" for the full list.
+
 See [`ROADMAP.md`](./ROADMAP.md) for how each piece maps to a production AMQP
 client, and [`CHANGELOG.md`](./CHANGELOG.md) for what landed when.
 
