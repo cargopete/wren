@@ -223,14 +223,18 @@ _Parity target:_ `implementations/amqprs/connection.rs` (`ConnectionManager`, `P
 _Deferred:_ idle-timeout / max-lifetime channel reaping (needs a reaper) — the
 pool holds connections until `close_pool`. Add if a workload needs churn control.
 
-## Milestone 13 — Connection stats + deeper health 🎯 (next)
+## Milestone 13 — Connection stats + deeper health ✅
 
-- [ ] Stats: channels, reconnection attempts, errors
-- [ ] Health check that actually exercises the channel (declare probe), not just liveness
+- [x] `health_check` that actually exercises the channel (round-trips a throwaway declare), not just liveness
+- [x] `pool_stats` — connection count + channels handed out
 
 _Parity target:_ `connection.rs::ConnectionStats`, `client.rs::health_check`.
 
-## Milestone 14 — Kind-based producer ❌
+_Deferred:_ built-in reconnection counter on the recoverable consumer — the
+`on_connect` hook already lets callers count reconnects; a built-in stat would
+mean exposing the actor's subject.
+
+## Milestone 14 — Kind-based producer 🎯 (next)
 
 - [ ] A producer with a `kind → (exchange, routing key)` map, applied at publish time
 

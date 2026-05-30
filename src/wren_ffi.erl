@@ -22,6 +22,7 @@
     decode_event/1,
     connection_pid/1,
     is_connection_open/1,
+    health_check/1,
     log_warning/1,
     now_timestamp/0,
     close_channel/1,
@@ -267,6 +268,18 @@ connection_pid(Connection) ->
 
 is_connection_open(Connection) ->
     is_process_alive(Connection).
+
+%% Active health probe: declare a throwaway exclusive, auto-delete, server-named
+%% queue. This round-trips to the broker, proving the channel is responsive (not
+%% merely that the process is alive). The queue vanishes with the channel.
+health_check(Channel) ->
+    Declare = #'queue.declare'{queue = <<>>, exclusive = true, auto_delete = true},
+    try amqp_channel:call(Channel, Declare) of
+        #'queue.declare_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
 
 %% Settle a delivery according to a Gleam `Confirmation` (passed as an atom).
 settle(Channel, Tag, ack) ->

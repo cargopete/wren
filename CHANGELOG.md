@@ -17,7 +17,9 @@ All notable changes to wren are recorded here. The format follows
   (recoverable) run up to N deliveries at once, each in its own process, bounded
   by the broker's prefetch.
 - **Connection pool** — `start_pool` opens N connections; `pool_channel` hands
-  out channels round-robin across them; `pool_size` / `close_pool`.
+  out channels round-robin across them; `pool_size` / `pool_stats` / `close_pool`.
+- **Active health check** — `health_check` round-trips a throwaway declare to
+  confirm a channel is responsive, not merely alive.
 
 ## [0.1.0] — Unreleased
 

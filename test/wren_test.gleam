@@ -878,3 +878,33 @@ pub fn connection_pool_hands_out_working_channels_test() {
 
   wren.close_pool(pool)
 }
+
+// ---------------------------------------------------------------------------
+// Health check + pool stats
+// ---------------------------------------------------------------------------
+
+pub fn health_check_succeeds_on_a_live_channel_test() {
+  let #(connection, channel) = open()
+  let assert Ok(_) = wren.health_check(channel)
+  wren.close_connection(connection)
+}
+
+pub fn pool_stats_counts_channels_handed_out_test() {
+  let assert Ok(pool) = wren.start_pool(test_config(), 2)
+
+  let before = wren.pool_stats(pool)
+  assert before.connections == 2
+  assert before.channels_handed_out == 0
+
+  let assert Ok(c1) = wren.pool_channel(pool)
+  let assert Ok(c2) = wren.pool_channel(pool)
+  let assert Ok(c3) = wren.pool_channel(pool)
+
+  let after = wren.pool_stats(pool)
+  assert after.channels_handed_out == 3
+
+  wren.close_channel(c1)
+  wren.close_channel(c2)
+  wren.close_channel(c3)
+  wren.close_pool(pool)
+}

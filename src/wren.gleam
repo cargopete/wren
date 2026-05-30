@@ -265,9 +265,16 @@ pub fn open_channel(connection: Connection) -> Result(Channel, WrenError) {
   |> result.map_error(ChannelFailed)
 }
 
-/// Is the connection still alive? A cheap health check.
+/// Is the connection still alive? A cheap liveness check (process is up).
 pub fn is_open(connection: Connection) -> Bool {
   ffi_is_connection_open(connection)
+}
+
+/// Actively probe a channel by round-tripping a throwaway queue declare to the
+/// broker — confirms the channel is responsive, not merely that it exists.
+pub fn health_check(channel: Channel) -> Result(Nil, WrenError) {
+  ffi_health_check(channel)
+  |> result.map_error(ChannelFailed)
 }
 
 /// Set channel prefetch: the number of unacknowledged messages the broker will
@@ -653,11 +660,17 @@ pub opaque type Pool {
 
 type PoolRequest {
   NextChannel(reply: process.Subject(Result(Channel, WrenError)))
+  Stats(reply: process.Subject(PoolStats))
   CloseAll(reply: process.Subject(Nil))
 }
 
 type PoolState {
   PoolState(connections: List(Connection), next: Int)
+}
+
+/// A snapshot of a pool's activity.
+pub type PoolStats {
+  PoolStats(connections: Int, channels_handed_out: Int)
 }
 
 /// Open a pool of `size` connections (at least one).
@@ -686,6 +699,12 @@ pub fn pool_channel(pool: Pool) -> Result(Channel, WrenError) {
 /// How many connections the pool holds.
 pub fn pool_size(pool: Pool) -> Int {
   pool.size
+}
+
+/// A snapshot of the pool: connection count and how many channels it has handed
+/// out over its lifetime.
+pub fn pool_stats(pool: Pool) -> PoolStats {
+  process.call(pool.requests, 5000, Stats)
 }
 
 /// Close every connection in the pool and stop it.
@@ -722,6 +741,16 @@ fn handle_pool_request(
       let connection = pick_connection(state.connections, state.next)
       process.send(reply, open_channel(connection))
       actor.continue(PoolState(..state, next: state.next + 1))
+    }
+    Stats(reply) -> {
+      process.send(
+        reply,
+        PoolStats(
+          connections: list.length(state.connections),
+          channels_handed_out: state.next,
+        ),
+      )
+      actor.continue(state)
     }
     CloseAll(reply) -> {
       list.each(state.connections, close_connection)
@@ -1674,6 +1703,9 @@ fn connection_pid(connection: Connection) -> Pid
 
 @external(erlang, "wren_ffi", "is_connection_open")
 fn ffi_is_connection_open(connection: Connection) -> Bool
+
+@external(erlang, "wren_ffi", "health_check")
+fn ffi_health_check(channel: Channel) -> Result(Nil, String)
 
 @external(erlang, "wren_ffi", "settle")
 fn ffi_settle(channel: Channel, tag: Int, confirmation: Confirmation) -> Nil
