@@ -10,7 +10,8 @@ built on the BEAM and OTP.
 
 ## Status
 
-🐣 **Early days, but airborne.** The API will still change. So far:
+**The core is in place** and exercised by an integration suite against a real
+broker. Pre-1.0, so the API may still shift, but the feature set is whole:
 
 - ✅ Typed connections & channels over the Erlang `amqp_client`
 - ✅ A supervised, actor-based consumer (OTP restarts and re-subscribes on crash)
@@ -22,16 +23,15 @@ built on the BEAM and OTP.
 - ✅ Retry/dead-letter infrastructure — delay queues with TTL, dead-letter exchange, DLQ
 - ✅ Connection recovery — self-healing consumer that reconnects with backoff, plus QoS prefetch
 - ✅ Client config & ergonomics — `config_from_env`, vhost/heartbeat/timeout, a `Client` front door
-- 🚧 Docs, worked examples, and a Hex release
 
-See [`ROADMAP.md`](./ROADMAP.md) for the path to feature parity with a
-production AMQP client and the milestones along the way.
+See [`ROADMAP.md`](./ROADMAP.md) for how each piece maps to a production AMQP
+client, and [`CHANGELOG.md`](./CHANGELOG.md) for what landed when.
 
-## Goals
+## Design
 
 - A typed, router-style API for consuming messages by kind.
 - Producers with sensible defaults and explicit routing.
-- Retry and dead-letter handling driven by message headers.
+- Retry and dead-letter handling driven by message headers and broker topology.
 - Connection recovery that leans on OTP supervision rather than hand-rolled loops.
 
 ## A quick taste
@@ -95,14 +95,25 @@ let infra =
 let assert Ok(_) = wren.start_router_with_retry(channel, router, infra)
 ```
 
+## Examples
+
+Runnable, self-contained programs live under [`src/wren/examples`](./src/wren/examples):
+
+```sh
+gleam run -m wren/examples/router     # dispatch typed messages by kind
+gleam run -m wren/examples/retry      # fail once, then succeed via a delay queue
+gleam run -m wren/examples/recovery   # a self-healing consumer
+gleam run -m wren/demo                # the original supervised-consumer demo
+```
+
 ## Development
 
-The tests and demo talk to a real broker. Bring one up first:
+Everything talks to a real broker. Bring one up first:
 
 ```sh
 docker compose up -d            # start a local RabbitMQ (wren / wren)
-gleam test                      # run the integration tests
-gleam run -m wren/demo          # run the supervised-consumer demo
+gleam test                      # run the integration + unit suites
+gleam run -m wren/examples/router
 docker compose down             # stop the broker
 ```
 

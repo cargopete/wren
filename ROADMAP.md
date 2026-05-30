@@ -174,13 +174,14 @@ _Deferred:_ TLS toggle (needs `ssl_options` wiring) — add when a deployment ne
 
 ---
 
-## Milestone 9 — Docs, examples, 1.0 polish 🎯 (next)
+## Milestone 9 — Docs, examples, 1.0 polish ✅ (bar publish)
 
-- [ ] Module docs + `gleam docs` pass
-- [ ] Worked examples: simple consumer, router, retry/DLX, recovery
-- [ ] README rewrite (away from "🐣 early days")
-- [ ] `CHANGELOG.md`
-- [ ] Publish to Hex
+- [x] Module docs + clean `gleam docs build`
+- [x] Worked examples: `wren/examples/{router,retry,recovery}` (+ `wren/demo`)
+- [x] README rewrite (away from "🐣 early days")
+- [x] `CHANGELOG.md`
+- [x] Release prep: version `0.1.0`, `internal_modules` hides examples from docs
+- [ ] `gleam publish` to Hex — awaiting the nod (irreversible)
 
 ---
 

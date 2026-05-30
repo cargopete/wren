@@ -1,9 +1,13 @@
 name = "wren"
-version = "1.0.0"
+version = "0.1.0"
 
 description = "An ergonomic RabbitMQ / AMQP messaging library for Gleam, built on the BEAM and OTP."
 licences = ["MIT"]
 repository = { type = "github", user = "cargopete", repo = "wren" }
+links = [{ title = "Changelog", href = "https://github.com/cargopete/wren/blob/main/CHANGELOG.md" }]
+
+# Example programs carry `main` functions for local running, not library API.
+internal_modules = ["wren/examples/*", "wren/demo"]
 
 # For a full reference of all the available options, you can have a look at
 # https://gleam.run/writing-gleam/gleam-toml/.
