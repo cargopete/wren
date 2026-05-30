@@ -17,6 +17,7 @@
     settle/3,
     decode_event/1,
     log_warning/1,
+    now_timestamp/0,
     close_channel/1,
     close_connection/1
 ]).
@@ -251,6 +252,10 @@ extract_headers(_) ->
 log_warning(Message) ->
     logger:warning(Message),
     nil.
+
+%% Current time as an RFC 3339 / ISO 8601 UTC string.
+now_timestamp() ->
+    list_to_binary(calendar:system_time_to_rfc3339(erlang:system_time(second), [{offset, "Z"}])).
 
 close_channel(Channel) ->
     try amqp_channel:close(Channel) catch _:_ -> ok end,

@@ -120,26 +120,27 @@ the live retry flow.
 
 ---
 
-## Milestone 6 — Retry infrastructure + real DLX 🎯 (next)
+## Milestone 6 — Retry infrastructure + real DLX ✅
 
 Where wren finally earns its keep over raw `amqp_client`. Replaces the `Retry`
 requeue stub and the `DeadLetter == Reject` stub with genuine topology.
 
-- [ ] `InfrastructureLayout` from a `RetryPolicy`: retry exchange, DLX, DLQ,
+- [x] `RetryInfrastructure` from a `RetryPolicy`: retry exchange, DLX, DLQ,
   per-attempt delay queues with `x-message-ttl`
-- [ ] Exponential → N delay queues (increasing TTL); fixed → single retry queue
-- [ ] Main queue bound to DLX; delay queues dead-letter back to main on TTL expiry
-- [ ] `setup` that builds the whole topology idempotently
-- [ ] Re-wire consumer `Retry`/`DeadLetter` settlement to route via the retry
-  infrastructure instead of the FFI placeholders
-- [ ] `RetryNotConfigured` behaviour when a handler asks to retry with no infra
+- [x] Exponential → N delay queues (per-attempt TTL); fixed → single retry queue
+- [x] Delay queues dead-letter back to the main queue on TTL expiry
+- [x] `setup_retry` builds the whole topology idempotently
+- [x] Re-wired consumer `Retry`/`DeadLetter` settlement to republish through the
+  retry infrastructure (delay queue / DLQ) and ack — FFI placeholders retired
+- [x] Retry headers refreshed + timestamped each hop (`now_timestamp` FFI)
+- [x] `start_consumer_with_retry` / `start_router_with_retry`; no-infra `Retry` warns + rejects
 
 _Parity target:_ `retry_infrastructure.rs`, `consumer/auto_retry.rs`,
 `consumer/builder.rs::handle_retry`/`handle_dlq`, `config.rs::DeadLetterConfig`.
 
 ---
 
-## Milestone 7 — Connection recovery + QoS ❌
+## Milestone 7 — Connection recovery + QoS 🎯 (next)
 
 bunnyhop hand-rolls reconnection with backoff+jitter; we let OTP do the heavy
 lifting and add the QoS knobs.

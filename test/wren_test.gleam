@@ -8,6 +8,7 @@ import gleam/list
 import gleam/result
 import gleeunit
 import wren
+import wren/retry
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -450,5 +451,166 @@ pub fn router_handle_with_exposes_context_test() {
   assert list.key_find(headers, "trace-id") == Ok("ctx-42")
 
   wren.stop(consumer)
+  wren.close_connection(connection)
+}
+
+// ---------------------------------------------------------------------------
+// Retry infrastructure + dead-letter
+// ---------------------------------------------------------------------------
+
+fn fixed_infra(
+  name: String,
+  interval: Int,
+  max: Int,
+) -> wren.RetryInfrastructure {
+  wren.retry_infrastructure(
+    name,
+    retry.RetryPolicy(
+      strategy: retry.FixedInterval(interval),
+      max_attempts: max,
+    ),
+  )
+}
+
+/// Tear down a fixed-interval retry topology so tests don't leave litter behind.
+fn teardown_fixed(
+  channel: wren.Channel,
+  infra: wren.RetryInfrastructure,
+) -> Nil {
+  // The main queue is purged, not deleted: the consumer we just stopped still
+  // has a subscription on the shared channel, and deleting its queue would have
+  // the broker fire a `basic.cancel` at the dead subscriber.
+  let _ = wren.purge_queue(channel, infra.main_queue)
+  let _ = wren.delete_queue(channel, infra.dlq)
+  let _ = wren.delete_queue(channel, infra.main_queue <> ".retry")
+  let _ = wren.delete_exchange(channel, infra.retry_exchange)
+  let _ = wren.delete_exchange(channel, infra.dlx_exchange)
+  Nil
+}
+
+pub fn retry_round_trips_through_delay_queue_test() {
+  let #(connection, channel) = open()
+  let infra = fixed_infra("wren_test_retry", 300, 5)
+  let assert Ok(_) = wren.setup_retry(channel, infra)
+  let assert Ok(_) = wren.purge_queue(channel, infra.main_queue)
+  let assert Ok(_) = wren.purge_queue(channel, infra.main_queue <> ".retry")
+
+  let inbox = process.new_subject()
+  // Fail the first time (no retry header yet), succeed once redelivered.
+  let handler = fn(message: wren.Message) -> wren.Confirmation {
+    process.send(inbox, message)
+    case retry.from_headers(message.headers, 5).attempt {
+      0 -> wren.Retry
+      _ -> wren.Ack
+    }
+  }
+  let assert Ok(consumer) =
+    wren.start_consumer_with_retry(channel, handler, infra)
+
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: infra.main_queue,
+      payload: "retry me",
+    )
+
+  // First delivery: no retry count yet.
+  let assert Ok(first) = process.receive(from: inbox, within: 5000)
+  assert list.key_find(first.headers, "x-retry-count") == Error(Nil)
+  // Second delivery arrives after the TTL, now stamped as attempt 1.
+  let assert Ok(second) = process.receive(from: inbox, within: 8000)
+  assert list.key_find(second.headers, "x-retry-count") == Ok("1")
+  assert second.payload == "retry me"
+
+  wren.stop(consumer)
+  teardown_fixed(channel, infra)
+  wren.close_connection(connection)
+}
+
+pub fn exhausted_retry_routes_to_dlq_test() {
+  let #(connection, channel) = open()
+  // max_attempts 1: the very first Retry is already exhausted -> DLQ.
+  let infra = fixed_infra("wren_test_exhaust", 200, 1)
+  let assert Ok(_) = wren.setup_retry(channel, infra)
+  let assert Ok(_) = wren.purge_queue(channel, infra.main_queue)
+  let assert Ok(_) = wren.purge_queue(channel, infra.dlq)
+
+  let handler = fn(_message: wren.Message) -> wren.Confirmation { wren.Retry }
+  let assert Ok(consumer) =
+    wren.start_consumer_with_retry(channel, handler, infra)
+
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: infra.main_queue,
+      payload: "doomed",
+    )
+
+  // It should land in the DLQ rather than bounce around forever.
+  let assert Ok(payload) = wren.get(channel, infra.dlq)
+  assert payload == "doomed"
+
+  wren.stop(consumer)
+  teardown_fixed(channel, infra)
+  wren.close_connection(connection)
+}
+
+pub fn dead_letter_confirmation_routes_to_dlq_test() {
+  let #(connection, channel) = open()
+  let infra = fixed_infra("wren_test_dl", 200, 5)
+  let assert Ok(_) = wren.setup_retry(channel, infra)
+  let assert Ok(_) = wren.purge_queue(channel, infra.main_queue)
+  let assert Ok(_) = wren.purge_queue(channel, infra.dlq)
+
+  let handler = fn(_message: wren.Message) -> wren.Confirmation {
+    wren.DeadLetter
+  }
+  let assert Ok(consumer) =
+    wren.start_consumer_with_retry(channel, handler, infra)
+
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: infra.main_queue,
+      payload: "straight to jail",
+    )
+
+  let assert Ok(payload) = wren.get(channel, infra.dlq)
+  assert payload == "straight to jail"
+
+  wren.stop(consumer)
+  teardown_fixed(channel, infra)
+  wren.close_connection(connection)
+}
+
+pub fn setup_retry_is_idempotent_for_exponential_test() {
+  let #(connection, channel) = open()
+  let infra =
+    wren.retry_infrastructure(
+      "wren_test_expo",
+      retry.RetryPolicy(
+        strategy: retry.ExponentialBackoff(
+          initial_ms: 100,
+          max_ms: 1000,
+          multiplier: 2.0,
+        ),
+        max_attempts: 3,
+      ),
+    )
+
+  // Declaring the exponential topology twice must be a no-op the second time.
+  let assert Ok(_) = wren.setup_retry(channel, infra)
+  let assert Ok(_) = wren.setup_retry(channel, infra)
+
+  let _ = wren.delete_queue(channel, infra.main_queue)
+  let _ = wren.delete_queue(channel, infra.dlq)
+  let _ = wren.delete_queue(channel, "wren_test_expo.retry.1")
+  let _ = wren.delete_queue(channel, "wren_test_expo.retry.2")
+  let _ = wren.delete_queue(channel, "wren_test_expo.retry.3")
+  let _ = wren.delete_exchange(channel, infra.retry_exchange)
+  let _ = wren.delete_exchange(channel, infra.dlx_exchange)
   wren.close_connection(connection)
 }

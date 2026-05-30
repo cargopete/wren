@@ -9,6 +9,7 @@
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Pid}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
@@ -16,6 +17,10 @@ import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import gleam/result
 import wren/codec.{type Codec}
+import wren/retry.{
+  type RetryMetadata, type RetryPolicy, ExponentialBackoff, FixedInterval,
+  RetryMetadata,
+}
 
 // ===========================================================================
 // Types
@@ -438,12 +443,143 @@ pub fn close_connection(connection: Connection) -> Nil {
 }
 
 // ===========================================================================
+// Retry infrastructure — delay queues + dead-letter exchange
+// ===========================================================================
+
+/// The broker topology that powers retries and dead-lettering for one main
+/// queue. Build with `retry_infrastructure`, declare it with `setup_retry`,
+/// and hand it to `start_consumer_with_retry` / `start_router_with_retry`.
+///
+/// Mirrors bunnyhop's `RetryInfrastructure` / `InfrastructureLayout`: when a
+/// handler asks to `Retry`, the message is republished into a delay queue (a
+/// queue with a TTL and no consumer) that dead-letters back to the main queue
+/// when the TTL expires. Exhausted and `DeadLetter` messages go to the DLQ.
+pub type RetryInfrastructure {
+  RetryInfrastructure(
+    main_queue: String,
+    retry_exchange: String,
+    dlx_exchange: String,
+    dlq: String,
+    policy: RetryPolicy,
+  )
+}
+
+const dlq_routing_key = "dlq"
+
+/// Derive the retry topology for `main_queue` from a `RetryPolicy`. Names are
+/// derived from the main queue: `<q>.retry`, `<q>.dlx`, `<q>.dlq`.
+pub fn retry_infrastructure(
+  main_queue: String,
+  policy: RetryPolicy,
+) -> RetryInfrastructure {
+  RetryInfrastructure(
+    main_queue:,
+    retry_exchange: main_queue <> ".retry",
+    dlx_exchange: main_queue <> ".dlx",
+    dlq: main_queue <> ".dlq",
+    policy:,
+  )
+}
+
+/// Declare the whole retry topology, idempotently: the retry exchange, the DLX,
+/// the main queue, the DLQ (bound to the DLX), and one delay queue per retry
+/// slot (each with its TTL and a dead-letter route back to the main queue).
+pub fn setup_retry(
+  channel: Channel,
+  infra: RetryInfrastructure,
+) -> Result(Nil, WrenError) {
+  use _ <- result.try(declare_exchange(
+    channel,
+    infra.retry_exchange,
+    Direct,
+    exchange_options(),
+  ))
+  use _ <- result.try(declare_exchange(
+    channel,
+    infra.dlx_exchange,
+    Direct,
+    exchange_options(),
+  ))
+  use _ <- result.try(declare_queue(channel, infra.main_queue))
+  use _ <- result.try(declare_queue(channel, infra.dlq))
+  use _ <- result.try(bind_queue(
+    channel,
+    queue: infra.dlq,
+    exchange: infra.dlx_exchange,
+    routing_key: dlq_routing_key,
+  ))
+
+  list.try_map(retry_slots(infra), fn(slot) {
+    let #(queue, routing_key, ttl) = slot
+    let options =
+      QueueOptions(..queue_options(), arguments: [
+        #("x-message-ttl", IntArg(ttl)),
+        #("x-dead-letter-exchange", StringArg("")),
+        #("x-dead-letter-routing-key", StringArg(infra.main_queue)),
+      ])
+    use _ <- result.try(declare_queue_with(channel, queue, options))
+    bind_queue(
+      channel,
+      queue: queue,
+      exchange: infra.retry_exchange,
+      routing_key: routing_key,
+    )
+  })
+  |> result.replace(Nil)
+}
+
+/// The delay queues to declare: `#(queue_name, routing_key, ttl_ms)`. One per
+/// attempt for exponential backoff (each with its own TTL), or a single queue
+/// for a fixed interval.
+fn retry_slots(infra: RetryInfrastructure) -> List(#(String, String, Int)) {
+  case infra.policy.strategy {
+    FixedInterval(interval_ms) -> [
+      #(infra.main_queue <> ".retry", "retry", int.max(interval_ms, 0)),
+    ]
+    ExponentialBackoff(..) ->
+      int_range(1, infra.policy.max_attempts)
+      |> list.map(fn(attempt) {
+        #(
+          infra.main_queue <> ".retry." <> int.to_string(attempt),
+          "attempt." <> int.to_string(attempt),
+          retry.calculate_delay(infra.policy, attempt),
+        )
+      })
+  }
+}
+
+/// The routing key that lands a message in the delay queue for `attempt`.
+fn retry_routing_key_for_attempt(
+  infra: RetryInfrastructure,
+  attempt: Int,
+) -> String {
+  case infra.policy.strategy {
+    FixedInterval(_) -> "retry"
+    ExponentialBackoff(..) -> {
+      let capped = int.min(int.max(attempt, 1), infra.policy.max_attempts)
+      "attempt." <> int.to_string(capped)
+    }
+  }
+}
+
+fn int_range(from: Int, to: Int) -> List(Int) {
+  case from > to {
+    True -> []
+    False -> [from, ..int_range(from + 1, to)]
+  }
+}
+
+// ===========================================================================
 // Consumer — a supervised OTP actor
 // ===========================================================================
 
 /// Internal actor state.
 type State {
-  State(channel: Channel, handler: fn(Message) -> Confirmation)
+  State(
+    channel: Channel,
+    handler: fn(Message) -> Confirmation,
+    retry: Option(RetryInfrastructure),
+  )
 }
 
 /// Internal actor messages, decoded from the raw AMQP mailbox.
@@ -468,7 +604,29 @@ pub fn start_consumer(
   queue: String,
   handler: fn(Message) -> Confirmation,
 ) -> Result(Consumer, WrenError) {
-  let builder = consumer_builder(channel, queue, handler)
+  start_consumer_internal(channel, queue, handler, None)
+}
+
+/// Start a supervised consumer backed by retry infrastructure. The topology is
+/// declared first (via `setup_retry`), then the consumer subscribes to the
+/// infrastructure's main queue. Handlers returning `Retry` are redelivered
+/// through the delay queues; `DeadLetter` (and exhausted retries) go to the DLQ.
+pub fn start_consumer_with_retry(
+  channel: Channel,
+  handler: fn(Message) -> Confirmation,
+  infra: RetryInfrastructure,
+) -> Result(Consumer, WrenError) {
+  use _ <- result.try(setup_retry(channel, infra))
+  start_consumer_internal(channel, infra.main_queue, handler, Some(infra))
+}
+
+fn start_consumer_internal(
+  channel: Channel,
+  queue: String,
+  handler: fn(Message) -> Confirmation,
+  retry: Option(RetryInfrastructure),
+) -> Result(Consumer, WrenError) {
+  let builder = consumer_builder(channel, queue, handler, retry)
   let child = supervision.worker(fn() { actor.start(builder) })
 
   static_supervisor.new(static_supervisor.OneForOne)
@@ -491,6 +649,7 @@ fn consumer_builder(
   channel: Channel,
   queue: String,
   handler: fn(Message) -> Confirmation,
+  retry: Option(RetryInfrastructure),
 ) {
   actor.new_with_initialiser(5000, fn(subject) {
     // init runs in the actor's own process, so `self` is the consumer pid.
@@ -499,7 +658,7 @@ fn consumer_builder(
         let selector =
           process.new_selector()
           |> process.select_other(decode_event)
-        actor.initialised(State(channel:, handler:))
+        actor.initialised(State(channel:, handler:, retry:))
         |> actor.selecting(selector)
         |> actor.returning(subject)
         |> Ok
@@ -515,13 +674,127 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
     Delivery(tag, payload, routing_key, headers) -> {
       let message = Message(payload:, routing_key:, headers:)
       let confirmation = state.handler(message)
-      ffi_settle(state.channel, tag, confirmation)
+      settle(state, message, tag, confirmation)
       actor.continue(state)
     }
     // Broker cancelled us: stop so the supervisor restarts and re-subscribes.
     Cancelled -> actor.stop()
     Ignored -> actor.continue(state)
   }
+}
+
+/// Settle a delivery according to the handler's `Confirmation`. `Ack`/`Reject`
+/// settle directly with the broker; `Retry`/`DeadLetter` route through the
+/// retry infrastructure when one is configured.
+fn settle(
+  state: State,
+  message: Message,
+  tag: Int,
+  confirmation: Confirmation,
+) -> Nil {
+  case confirmation {
+    Ack -> ffi_settle(state.channel, tag, Ack)
+    Reject -> ffi_settle(state.channel, tag, Reject)
+    Retry -> settle_retry(state, message, tag)
+    DeadLetter -> settle_dead_letter(state, message, tag)
+  }
+}
+
+fn settle_retry(state: State, message: Message, tag: Int) -> Nil {
+  case state.retry {
+    None -> {
+      log_warning(
+        "wren: Retry requested but no retry infrastructure configured; rejecting",
+      )
+      ffi_settle(state.channel, tag, Reject)
+    }
+    Some(infra) -> {
+      let metadata =
+        retry.from_headers(message.headers, infra.policy.max_attempts)
+        |> retry.record_failure("handler returned Retry")
+        |> stamp
+      // Exhausted retries fall through to the DLQ; otherwise into a delay queue.
+      let #(exchange, routing_key) = case retry.is_exhausted(metadata) {
+        True -> #(infra.dlx_exchange, dlq_routing_key)
+        False -> #(
+          infra.retry_exchange,
+          retry_routing_key_for_attempt(infra, metadata.attempt),
+        )
+      }
+      reroute(state, message, tag, exchange, routing_key, metadata)
+    }
+  }
+}
+
+fn settle_dead_letter(state: State, message: Message, tag: Int) -> Nil {
+  case state.retry {
+    // No DLQ to route to — reject without requeue (the broker's own DLX, if any).
+    None -> ffi_settle(state.channel, tag, DeadLetter)
+    Some(infra) -> {
+      let metadata =
+        retry.from_headers(message.headers, infra.policy.max_attempts)
+        |> retry.record_failure("handler returned DeadLetter")
+        |> stamp
+      reroute(
+        state,
+        message,
+        tag,
+        infra.dlx_exchange,
+        dlq_routing_key,
+        metadata,
+      )
+    }
+  }
+}
+
+/// Republish `message` (with refreshed retry headers) to `exchange`/`routing_key`,
+/// then ack the original. If the republish fails, reject so we don't lose track.
+fn reroute(
+  state: State,
+  message: Message,
+  tag: Int,
+  exchange: String,
+  routing_key: String,
+  metadata: RetryMetadata,
+) -> Nil {
+  let options =
+    publish_options()
+    |> to_exchange(exchange)
+    |> route(routing_key)
+    |> with_headers(merge_retry_headers(message.headers, metadata))
+
+  case publish_with_options(state.channel, message.payload, options) {
+    Ok(_) -> ffi_settle(state.channel, tag, Ack)
+    Error(_) -> {
+      log_warning("wren: failed to route message to '" <> exchange <> "'")
+      ffi_settle(state.channel, tag, Reject)
+    }
+  }
+}
+
+/// Overlay refreshed retry headers onto the message's existing headers,
+/// replacing any stale retry headers of the same name.
+fn merge_retry_headers(
+  original: List(#(String, String)),
+  metadata: RetryMetadata,
+) -> List(#(String, String)) {
+  let refreshed = retry.to_headers(metadata)
+  let refreshed_keys = list.map(refreshed, fn(header) { header.0 })
+  let kept =
+    list.filter(original, fn(header) {
+      !list.contains(refreshed_keys, header.0)
+    })
+  list.append(kept, refreshed)
+}
+
+/// Timestamp a failure: always set `last_retry`; set `first_death` only once.
+fn stamp(metadata: RetryMetadata) -> RetryMetadata {
+  let now = now_timestamp()
+  let first_death = case metadata.first_death {
+    Some(_) -> metadata.first_death
+    None -> Some(now)
+  }
+  RetryMetadata(..metadata, last_retry: Some(now), first_death:)
 }
 
 // ===========================================================================
@@ -601,6 +874,21 @@ pub fn start_router(
   router: Router,
 ) -> Result(Consumer, WrenError) {
   start_consumer(channel, queue, fn(message) { dispatch(router, message) })
+}
+
+/// Start a router-backed consumer with retry infrastructure: the topology is
+/// declared, then deliveries to the main queue are routed by kind. Handlers
+/// returning `Retry`/`DeadLetter` flow through the delay queues and DLQ.
+pub fn start_router_with_retry(
+  channel: Channel,
+  router: Router,
+  infra: RetryInfrastructure,
+) -> Result(Consumer, WrenError) {
+  start_consumer_with_retry(
+    channel,
+    fn(message) { dispatch(router, message) },
+    infra,
+  )
 }
 
 fn dispatch(router: Router, message: Message) -> Confirmation {
@@ -719,6 +1007,9 @@ fn decode_event(message: Dynamic) -> Event
 
 @external(erlang, "wren_ffi", "log_warning")
 fn log_warning(message: String) -> Nil
+
+@external(erlang, "wren_ffi", "now_timestamp")
+fn now_timestamp() -> String
 
 @external(erlang, "wren_ffi", "close_channel")
 fn ffi_close_channel(channel: Channel) -> Nil

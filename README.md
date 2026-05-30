@@ -19,7 +19,8 @@ built on the BEAM and OTP.
 - ✅ Router-style consumer — dispatch by message `kind` to typed handlers, with a fallback
 - ✅ Topology management — exchanges, bindings, deletes, and `x-*` queue/exchange arguments
 - ✅ Retry policy & metadata — backoff strategies, header round-tripping (`wren/retry`)
-- 🚧 Retry/dead-letter *infrastructure* (delay queues + DLX), connection recovery
+- ✅ Retry/dead-letter infrastructure — delay queues with TTL, dead-letter exchange, DLQ
+- 🚧 Connection recovery, client config & ergonomics
 
 See [`ROADMAP.md`](./ROADMAP.md) for the path to feature parity with a
 production AMQP client and the milestones along the way.
@@ -64,6 +65,33 @@ let assert Ok(_) = wren.start_router(channel, "orders", router)
 Handlers receive the already-decoded value; a malformed payload is rejected and
 logged before it ever reaches your code. Need the headers or routing key too?
 Reach for `handle_with`, which also hands you the raw `Message`.
+
+### Retries & dead-lettering
+
+Give the consumer a retry policy and wren builds the delay-queue + dead-letter
+topology for you. A handler returning `wren.Retry` redelivers the message after
+a backoff (via a TTL'd delay queue); once attempts are exhausted — or on
+`wren.DeadLetter` — it goes to the dead-letter queue.
+
+```gleam
+import wren/retry
+
+let infra =
+  wren.retry_infrastructure(
+    "orders",
+    retry.RetryPolicy(
+      strategy: retry.ExponentialBackoff(
+        initial_ms: 1000,
+        max_ms: 60_000,
+        multiplier: 2.0,
+      ),
+      max_attempts: 5,
+    ),
+  )
+
+// Declares the topology and starts consuming, routing by kind.
+let assert Ok(_) = wren.start_router_with_retry(channel, router, infra)
+```
 
 ## Development
 
