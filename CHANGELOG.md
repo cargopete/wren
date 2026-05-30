@@ -4,7 +4,9 @@ All notable changes to wren are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] — 2026-05-30
+
+Closes the remaining capability gaps with the `bunnyhop` crate.
 
 ### Added
 
@@ -29,9 +31,9 @@ All notable changes to wren are recorded here. The format follows
   `delete_exchange_with` (`if_unused`), and `bind_queue_with` for binding
   arguments (e.g. `x-match` on headers exchanges).
 
-## [0.1.0] — Unreleased
+## [0.1.0] — 2026-05-30
 
-The first release: a complete, type-safe AMQP messaging core on the BEAM.
+The first cut: a complete, type-safe AMQP messaging core on the BEAM.
 
 ### Added
 
@@ -64,4 +66,5 @@ The first release: a complete, type-safe AMQP messaging core on the BEAM.
   an `on_connect` hook.
 - **Examples** — runnable `wren/examples/{router,retry,recovery}` and `wren/demo`.
 
+[0.2.0]: https://github.com/cargopete/wren/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cargopete/wren/releases/tag/v0.1.0
