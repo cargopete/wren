@@ -5,6 +5,7 @@
 import fixtures.{type Order, type Shipment, Order, Shipment}
 import gleam/erlang/process
 import gleam/list
+import gleam/option
 import gleam/result
 import gleeunit
 import wren
@@ -969,4 +970,25 @@ pub fn publish_for_kind_falls_back_to_default_exchange_test() {
   assert payload == "unmapped"
 
   wren.close_connection(connection)
+}
+
+// ---------------------------------------------------------------------------
+// TLS
+// ---------------------------------------------------------------------------
+
+pub fn tls_handshake_against_plaintext_port_fails_test() {
+  // The dev broker speaks plaintext on 5672, so a TLS handshake there must
+  // error (not hang) — proof the TLS path is wired through to amqp_client.
+  let config =
+    wren.Config(
+      ..test_config(),
+      connection_timeout_ms: 3000,
+      tls: wren.Tls(
+        verify: False,
+        cacert_file: option.None,
+        cert_file: option.None,
+        key_file: option.None,
+      ),
+    )
+  assert result.is_error(wren.connect(config))
 }

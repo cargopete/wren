@@ -150,6 +150,20 @@ pub fn exchange_options() -> ExchangeOptions {
   )
 }
 
+/// TLS settings for a connection. `NoTls` is plaintext; `Tls` enables it.
+pub type Tls {
+  /// Plaintext connection (the default).
+  NoTls
+  /// TLS connection. `verify` toggles peer verification; the file paths are
+  /// optional PEM paths (CA bundle, client cert, client key).
+  Tls(
+    verify: Bool,
+    cacert_file: Option(String),
+    cert_file: Option(String),
+    key_file: Option(String),
+  )
+}
+
 /// Connection settings. Build via `default_config` and override as needed.
 pub type Config {
   Config(
@@ -163,10 +177,12 @@ pub type Config {
     heartbeat_seconds: Int,
     /// How long to wait for the TCP connection to establish, in milliseconds.
     connection_timeout_ms: Int,
+    /// TLS settings (`NoTls` for plaintext).
+    tls: Tls,
   )
 }
 
-/// Sensible localhost defaults (the classic `guest`/`guest`, vhost `/`).
+/// Sensible localhost defaults (the classic `guest`/`guest`, vhost `/`, plaintext).
 pub fn default_config() -> Config {
   Config(
     host: "localhost",
@@ -176,6 +192,7 @@ pub fn default_config() -> Config {
     virtual_host: "/",
     heartbeat_seconds: 60,
     connection_timeout_ms: 10_000,
+    tls: NoTls,
   )
 }
 
@@ -216,6 +233,7 @@ pub fn config_from_lookup(lookup: fn(String) -> Result(String, Nil)) -> Config {
       lookup("RABBITMQ_CONNECTION_TIMEOUT"),
       defaults.connection_timeout_ms,
     ),
+    tls: defaults.tls,
   )
 }
 
@@ -255,6 +273,7 @@ pub fn connect(config: Config) -> Result(Connection, WrenError) {
     config.virtual_host,
     config.heartbeat_seconds,
     config.connection_timeout_ms,
+    config.tls,
   )
   |> result.map_error(ConnectionFailed)
 }
@@ -1686,6 +1705,7 @@ fn ffi_connect(
   virtual_host: String,
   heartbeat_seconds: Int,
   connection_timeout_ms: Int,
+  tls: Tls,
 ) -> Result(Connection, String)
 
 @external(erlang, "wren_ffi", "getenv")

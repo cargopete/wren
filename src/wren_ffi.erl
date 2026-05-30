@@ -1,7 +1,7 @@
 -module(wren_ffi).
 -include_lib("amqp_client/include/amqp_client.hrl").
 -export([
-    connect/7,
+    connect/8,
     getenv/1,
     open_channel/1,
     declare_queue_full/6,
@@ -33,7 +33,7 @@
 %%   {ok, X} | {error, Binary}  -> Result(X, String)
 %% Opaque connection/channel pids are passed back and forth as-is.
 
-connect(Host, Port, User, Pass, VHost, Heartbeat, Timeout) ->
+connect(Host, Port, User, Pass, VHost, Heartbeat, Timeout, Tls) ->
     Params = #amqp_params_network{
         host = binary_to_list(Host),
         port = Port,
@@ -41,12 +41,29 @@ connect(Host, Port, User, Pass, VHost, Heartbeat, Timeout) ->
         password = Pass,
         virtual_host = VHost,
         heartbeat = Heartbeat,
-        connection_timeout = Timeout
+        connection_timeout = Timeout,
+        ssl_options = build_ssl(Tls)
     },
     case amqp_connection:start(Params) of
         {ok, Connection} -> {ok, Connection};
         {error, Reason} -> {error, fmt(Reason)}
     end.
+
+%% `ssl_options = none` means plaintext; a list enables TLS. The Gleam `Tls`
+%% value arrives as `no_tls` | `{tls, Verify, CaCert, Cert, Key}`.
+build_ssl(no_tls) ->
+    none;
+build_ssl({tls, Verify, CaCert, Cert, Key}) ->
+    [{verify, verify_mode(Verify)}]
+        ++ maybe_file(cacertfile, CaCert)
+        ++ maybe_file(certfile, Cert)
+        ++ maybe_file(keyfile, Key).
+
+verify_mode(true) -> verify_peer;
+verify_mode(false) -> verify_none.
+
+maybe_file(_Key, none) -> [];
+maybe_file(Key, {some, Path}) -> [{Key, binary_to_list(Path)}].
 
 %% Read an environment variable as `{ok, Binary} | {error, nil}`.
 getenv(Name) ->

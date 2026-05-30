@@ -49,3 +49,7 @@ pub fn config_from_lookup_accepts_user_and_pass_aliases_test() {
   assert config.username == "bob"
   assert config.password == "hunter2"
 }
+
+pub fn default_config_is_plaintext_test() {
+  assert wren.default_config().tls == wren.NoTls
+}

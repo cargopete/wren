@@ -23,6 +23,8 @@ All notable changes to wren are recorded here. The format follows
 - **Kind-based producer** — `KindRouting` maps message kinds to
   `#(exchange, routing key)`; `publish_for_kind` / `publish_encoded_for_kind`
   apply it and stamp the `kind` header.
+- **TLS** — a `Tls` setting on `Config` (verify + CA/cert/key paths) wired
+  through to the connection's `ssl_options`.
 
 ## [0.1.0] — Unreleased
 

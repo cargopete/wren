@@ -242,13 +242,18 @@ mean exposing the actor's subject.
 
 _Parity target:_ `producer.rs::KindBasedProducer`.
 
-## Milestone 15 — TLS connections 🎯 (next)
+## Milestone 15 — TLS connections ✅
 
-- [ ] TLS via `amqp_params_network` `ssl_options`; a `Config` toggle + cert options
+- [x] `Tls` type (`NoTls` / `Tls` with verify + CA/cert/key paths) on `Config`,
+  wired to `amqp_params_network` `ssl_options`
 
 _Parity target:_ `Cargo.toml` `tls` feature, `config.rs` connection settings.
 
-## Milestone 16 — Topology refinements ❌
+_Note:_ the dev broker is plaintext, so the successful-handshake path isn't
+integration-tested here; the test confirms TLS is wired by asserting a handshake
+against the plaintext port fails (as it must). A TLS broker would round it out.
+
+## Milestone 16 — Topology refinements 🎯 (next)
 
 - [ ] `if_unused` / `if_empty` flags on `delete_queue`; `if_unused` on `delete_exchange`
 - [ ] Binding arguments (for headers-exchange binds)
