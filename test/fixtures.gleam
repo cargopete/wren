@@ -23,3 +23,19 @@ pub fn order_codec() -> codec.Codec(Order) {
     },
   )
 }
+
+pub type Shipment {
+  Shipment(tracking: String)
+}
+
+pub fn shipment_codec() -> codec.Codec(Shipment) {
+  codec.json(
+    fn(shipment: Shipment) {
+      json.object([#("tracking", json.string(shipment.tracking))])
+    },
+    {
+      use tracking <- decode.field("tracking", decode.string)
+      decode.success(Shipment(tracking:))
+    },
+  )
+}

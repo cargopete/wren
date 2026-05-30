@@ -16,7 +16,8 @@ built on the BEAM and OTP.
 - ✅ A supervised, actor-based consumer (OTP restarts and re-subscribes on crash)
 - ✅ Producer options — exchange, routing key, headers, priority, expiration, `mandatory`
 - ✅ A `Codec` abstraction with a JSON codec, plus typed `publish_encoded` / `decode_message`
-- 🚧 Router-style consumer, retry/dead-letter infrastructure, connection recovery
+- ✅ Router-style consumer — dispatch by message `kind` to typed handlers, with a fallback
+- 🚧 Retry/dead-letter infrastructure, connection recovery
 
 See [`ROADMAP.md`](./ROADMAP.md) for the path to feature parity with a
 production AMQP client and the milestones along the way.
@@ -46,15 +47,21 @@ let options =
   |> wren.with_kind("order.created")
 let assert Ok(_) = wren.publish_encoded(channel, order, order_codec, options)
 
-// Consume under supervision; decode the payload back into a value.
-let handler = fn(message: wren.Message) {
-  case wren.decode_message(message, order_codec) {
-    Ok(order) -> handle(order)
-    Error(_) -> wren.Reject
-  }
-}
-let assert Ok(_) = wren.start_consumer(channel, "orders", handler)
+// Consume under supervision, routing by kind to typed handlers.
+let router =
+  wren.router()
+  |> wren.handle("order.created", order_codec, fn(order: Order) {
+    handle(order)
+    wren.Ack
+  })
+  |> wren.fallback(fn(_message) { wren.Reject })
+
+let assert Ok(_) = wren.start_router(channel, "orders", router)
 ```
+
+Handlers receive the already-decoded value; a malformed payload is rejected and
+logged before it ever reaches your code. Need the headers or routing key too?
+Reach for `handle_with`, which also hands you the raw `Message`.
 
 ## Development
 

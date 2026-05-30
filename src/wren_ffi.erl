@@ -11,6 +11,7 @@
     subscribe/3,
     settle/3,
     decode_event/1,
+    log_warning/1,
     close_channel/1,
     close_connection/1
 ]).
@@ -177,6 +178,11 @@ extract_headers(#'P_basic'{headers = Headers}) when is_list(Headers) ->
     );
 extract_headers(_) ->
     [].
+
+%% Emit a warning through the standard OTP logger.
+log_warning(Message) ->
+    logger:warning(Message),
+    nil.
 
 close_channel(Channel) ->
     try amqp_channel:close(Channel) catch _:_ -> ok end,

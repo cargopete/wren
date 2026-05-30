@@ -67,24 +67,25 @@ later if a binary codec is needed.
 
 ---
 
-## Milestone 3 — Router-style consumer 🎯 (next)
+## Milestone 3 — Router-style consumer ✅
 
 The headline ergonomic feature. bunnyhop's `Router` + `MessageConsumer` builder,
 minus the extractor magic.
 
-- [ ] `Router` mapping `kind` → typed handler (decode body via codec, return `Confirmation`)
-- [ ] Fallback handler for unrouted kinds (defaults to `Reject` + warn, like bunnyhop)
-- [ ] Handler context value (raw message, headers, routing key, codec) — the
-  idiomatic stand-in for `ProcessContext` + extractors
-- [ ] Builder API: `consumer |> handle(kind, decoder, handler) |> fallback(...) |> listen(channel, queue)`
-- [ ] Wire the router into the existing supervised actor
+- [x] `Router` mapping `kind` → typed handler (decode body via codec, return `Confirmation`)
+- [x] Fallback handler for unrouted kinds (defaults to `Reject` + warn, like bunnyhop)
+- [x] Handler context: `handle_with` hands the decoded value *and* the raw `Message`
+  (headers, routing key, payload) — the idiomatic stand-in for `ProcessContext`
+- [x] Builder API: `router() |> handle(kind, codec, handler) |> fallback(...) |> start_router(channel, queue)`
+- [x] Decode failures are rejected + logged without crashing the consumer
+- [x] Wired into the existing supervised actor (same restart/re-subscribe guarantees)
 
 _Parity target:_ `consumer/router.rs`, `consumer/builder.rs`, `consumer/handler.rs`,
 `consumer/context.rs`.
 
 ---
 
-## Milestone 4 — Topology management ❌
+## Milestone 4 — Topology management 🎯 (next)
 
 Declare the world properly. bunnyhop's `QueueManager`.
 

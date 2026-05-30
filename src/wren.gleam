@@ -6,6 +6,7 @@
 //// a supervisor, so a crash means the runtime restarts it and re-subscribes —
 //// no hand-rolled reconnection loops.
 
+import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Pid}
 import gleam/list
@@ -382,6 +383,101 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
 }
 
 // ===========================================================================
+// Router — dispatch deliveries by kind to typed handlers
+// ===========================================================================
+
+/// Routes deliveries to handlers by their `kind` header. Build with `router`,
+/// register typed handlers with `handle` / `handle_with`, set a catch-all with
+/// `fallback`, then run it under supervision with `start_router`.
+///
+/// This is wren's idiomatic take on bunnyhop's `Router` + `MessageConsumer`:
+/// each typed handler is erased to `fn(Message) -> Confirmation` by closing over
+/// its codec, so handlers for different message types live in one table.
+pub opaque type Router {
+  Router(
+    handlers: Dict(String, fn(Message) -> Confirmation),
+    fallback: fn(Message) -> Confirmation,
+  )
+}
+
+/// A new router whose default fallback rejects unrouted messages with a warning.
+pub fn router() -> Router {
+  Router(handlers: dict.new(), fallback: warn_and_reject)
+}
+
+/// Register a handler for messages of `kind`. The payload is decoded with
+/// `codec`; on a decode failure the message is rejected (and a warning logged),
+/// so the handler only ever sees well-formed values.
+pub fn handle(
+  router: Router,
+  kind: String,
+  codec: Codec(a),
+  handler: fn(a) -> Confirmation,
+) -> Router {
+  handle_with(router, kind, codec, fn(value, _message) { handler(value) })
+}
+
+/// Like `handle`, but the handler also receives the raw `Message` — its
+/// headers, routing key, and undecoded payload — as context.
+pub fn handle_with(
+  router: Router,
+  kind: String,
+  codec: Codec(a),
+  handler: fn(a, Message) -> Confirmation,
+) -> Router {
+  let erased = fn(message: Message) -> Confirmation {
+    case codec.decode(message.payload) {
+      Ok(value) -> handler(value, message)
+      Error(error) -> {
+        log_warning(
+          "wren: dropping '"
+          <> kind
+          <> "' — payload failed to decode: "
+          <> codec_error_reason(error),
+        )
+        Reject
+      }
+    }
+  }
+  Router(..router, handlers: dict.insert(router.handlers, kind, erased))
+}
+
+/// Set the fallback handler invoked for messages whose `kind` has no registered
+/// handler (or that carry no `kind` header at all).
+pub fn fallback(
+  router: Router,
+  handler: fn(Message) -> Confirmation,
+) -> Router {
+  Router(..router, fallback: handler)
+}
+
+/// Start a supervised consumer on `queue` that dispatches each delivery through
+/// `router`. Same supervision guarantees as `start_consumer`.
+pub fn start_router(
+  channel: Channel,
+  queue: String,
+  router: Router,
+) -> Result(Consumer, WrenError) {
+  start_consumer(channel, queue, fn(message) { dispatch(router, message) })
+}
+
+fn dispatch(router: Router, message: Message) -> Confirmation {
+  let handler = case message_kind(message) {
+    Ok(kind) ->
+      dict.get(router.handlers, kind)
+      |> result.unwrap(router.fallback)
+    Error(_) -> router.fallback
+  }
+  handler(message)
+}
+
+fn warn_and_reject(message: Message) -> Confirmation {
+  let kind = result.unwrap(message_kind(message), "<none>")
+  log_warning("wren: no handler for kind '" <> kind <> "', rejecting")
+  Reject
+}
+
+// ===========================================================================
 // FFI bindings into src/wren_ffi.erl (Erlang `amqp_client`).
 // ===========================================================================
 
@@ -438,6 +534,9 @@ fn ffi_settle(channel: Channel, tag: Int, confirmation: Confirmation) -> Nil
 
 @external(erlang, "wren_ffi", "decode_event")
 fn decode_event(message: Dynamic) -> Event
+
+@external(erlang, "wren_ffi", "log_warning")
+fn log_warning(message: String) -> Nil
 
 @external(erlang, "wren_ffi", "close_channel")
 fn ffi_close_channel(channel: Channel) -> Nil

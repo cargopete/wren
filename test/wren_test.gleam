@@ -2,7 +2,7 @@
 //// one up with `docker compose up -d` (or rely on the CI service container).
 //// Credentials match the project's `docker-compose.yml` (`wren` / `wren`).
 
-import fixtures.{Order}
+import fixtures.{type Order, type Shipment, Order, Shipment}
 import gleam/erlang/process
 import gleam/list
 import gleam/result
@@ -174,6 +174,159 @@ pub fn publish_encoded_typed_round_trip_test() {
   assert wren.message_kind(received) == Ok("order.created")
   let assert Ok(decoded) = wren.decode_message(received, fixtures.order_codec())
   assert decoded == order
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+pub fn router_dispatches_by_kind_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_router")
+
+  let orders = process.new_subject()
+  let shipments = process.new_subject()
+  let unrouted = process.new_subject()
+
+  let router =
+    wren.router()
+    |> wren.handle("order.created", fixtures.order_codec(), fn(order: Order) {
+      process.send(orders, order)
+      wren.Ack
+    })
+    |> wren.handle(
+      "shipment.dispatched",
+      fixtures.shipment_codec(),
+      fn(shipment: Shipment) {
+        process.send(shipments, shipment)
+        wren.Ack
+      },
+    )
+    |> wren.fallback(fn(message: wren.Message) {
+      process.send(unrouted, message)
+      wren.Reject
+    })
+
+  let assert Ok(consumer) =
+    wren.start_router(channel, "wren_test_router", router)
+
+  let order = Order(id: "o-1", qty: 2)
+  let shipment = Shipment(tracking: "TRK-1")
+  let assert Ok(_) =
+    wren.publish_encoded(
+      channel,
+      order,
+      fixtures.order_codec(),
+      wren.publish_options()
+        |> wren.route("wren_test_router")
+        |> wren.with_kind("order.created"),
+    )
+  let assert Ok(_) =
+    wren.publish_encoded(
+      channel,
+      shipment,
+      fixtures.shipment_codec(),
+      wren.publish_options()
+        |> wren.route("wren_test_router")
+        |> wren.with_kind("shipment.dispatched"),
+    )
+  let assert Ok(_) =
+    wren.publish_with_options(
+      channel,
+      "{}",
+      wren.publish_options()
+        |> wren.route("wren_test_router")
+        |> wren.with_kind("mystery.kind"),
+    )
+
+  // Each kind reaches its own typed handler; the stranger hits the fallback.
+  let assert Ok(received_order) = process.receive(from: orders, within: 5000)
+  assert received_order == order
+  let assert Ok(received_shipment) =
+    process.receive(from: shipments, within: 5000)
+  assert received_shipment == shipment
+  let assert Ok(stranger) = process.receive(from: unrouted, within: 5000)
+  assert wren.message_kind(stranger) == Ok("mystery.kind")
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}
+
+pub fn router_rejects_undecodable_without_crashing_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_router_bad")
+
+  let orders = process.new_subject()
+  let router =
+    wren.router()
+    |> wren.handle("order.created", fixtures.order_codec(), fn(order: Order) {
+      process.send(orders, order)
+      wren.Ack
+    })
+
+  let assert Ok(consumer) =
+    wren.start_router(channel, "wren_test_router_bad", router)
+
+  // A malformed payload for a known kind must be rejected, not crash the
+  // consumer — so the *next*, valid message still gets through.
+  let bad =
+    wren.publish_options()
+    |> wren.route("wren_test_router_bad")
+    |> wren.with_kind("order.created")
+  let assert Ok(_) = wren.publish_with_options(channel, "not json", bad)
+
+  let good = Order(id: "o-2", qty: 9)
+  let assert Ok(_) =
+    wren.publish_encoded(channel, good, fixtures.order_codec(), bad)
+
+  // The handler only ever sees the well-formed value.
+  let assert Ok(received) = process.receive(from: orders, within: 5000)
+  assert received == good
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}
+
+pub fn router_handle_with_exposes_context_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_router_ctx")
+
+  let inbox = process.new_subject()
+  let router =
+    wren.router()
+    |> wren.handle_with(
+      "order.created",
+      fixtures.order_codec(),
+      fn(order: Order, message: wren.Message) {
+        // Forward the decoded value alongside its delivery context.
+        process.send(inbox, #(order, message.routing_key, message.headers))
+        wren.Ack
+      },
+    )
+
+  let assert Ok(consumer) =
+    wren.start_router(channel, "wren_test_router_ctx", router)
+
+  let order = Order(id: "o-3", qty: 1)
+  let assert Ok(_) =
+    wren.publish_encoded(
+      channel,
+      order,
+      fixtures.order_codec(),
+      wren.publish_options()
+        |> wren.route("wren_test_router_ctx")
+        |> wren.with_kind("order.created")
+        |> wren.with_header("trace-id", "ctx-42"),
+    )
+
+  let assert Ok(#(decoded, routing_key, headers)) =
+    process.receive(from: inbox, within: 5000)
+  assert decoded == order
+  assert routing_key == "wren_test_router_ctx"
+  assert list.key_find(headers, "trace-id") == Ok("ctx-42")
 
   wren.stop(consumer)
   wren.close_connection(connection)
