@@ -736,3 +736,40 @@ pub fn client_opens_channel_and_publishes_test() {
 
   wren.close_client(client)
 }
+
+// ---------------------------------------------------------------------------
+// Publisher confirms + persistence
+// ---------------------------------------------------------------------------
+
+pub fn publish_confirmed_succeeds_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_confirm")
+  let assert Ok(_) = wren.enable_confirms(channel)
+
+  let options =
+    wren.publish_options()
+    |> wren.route("wren_test_confirm")
+    |> wren.with_persistence()
+  let assert Ok(_) =
+    wren.publish_confirmed(channel, "confirmed payload", options, 5000)
+
+  let assert Ok(payload) = wren.get(channel, "wren_test_confirm")
+  assert payload == "confirmed payload"
+
+  wren.close_connection(connection)
+}
+
+pub fn publish_confirmed_without_enabling_is_an_error_test() {
+  // Each `open()` is a fresh connection, so a poisoned channel here can't
+  // disturb the other tests.
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_confirm_off")
+
+  let options =
+    wren.publish_options()
+    |> wren.route("wren_test_confirm_off")
+  // Waiting for confirms on a non-confirm channel is an error, not a hang.
+  assert result.is_error(wren.publish_confirmed(channel, "x", options, 1000))
+
+  wren.close_connection(connection)
+}

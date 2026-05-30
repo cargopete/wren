@@ -12,7 +12,9 @@
     delete_exchange/2,
     purge_queue/2,
     publish/4,
-    publish_full/9,
+    publish_full/10,
+    enable_confirms/1,
+    wait_for_confirms/2,
     get/2,
     subscribe/3,
     set_qos/4,
@@ -153,7 +155,7 @@ publish(Channel, Exchange, RoutingKey, Payload) ->
 %% Publish with the full set of producer options. Optional fields arrive from
 %% Gleam as `none` | `{some, Value}`; bools as `true` | `false`; headers as a
 %% list of `{Key, Value}` binaries.
-publish_full(Channel, Exchange, RoutingKey, Payload, Headers, Priority, Expiration, Mandatory, ContentType) ->
+publish_full(Channel, Exchange, RoutingKey, Payload, Headers, Priority, Expiration, Mandatory, ContentType, Persistent) ->
     Publish = #'basic.publish'{
         exchange = Exchange,
         routing_key = RoutingKey,
@@ -166,12 +168,33 @@ publish_full(Channel, Exchange, RoutingKey, Payload, Headers, Priority, Expirati
             [
                 with_content_type(ContentType),
                 with_priority(Priority),
-                with_expiration(Expiration)
+                with_expiration(Expiration),
+                with_persistence(Persistent)
             ]
         ),
     try amqp_channel:cast(Channel, Publish, #amqp_msg{props = Props, payload = Payload}) of
         ok -> {ok, nil};
         Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+%% Put a channel into publisher-confirm mode.
+enable_confirms(Channel) ->
+    try amqp_channel:call(Channel, #'confirm.select'{}) of
+        #'confirm.select_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+%% Wait (up to TimeoutMs) for the broker to confirm all messages published since
+%% the last call: `confirmed` (all ack'd), `nacked`, or `timed_out`.
+wait_for_confirms(Channel, TimeoutMs) ->
+    try amqp_channel:wait_for_confirms(Channel, {TimeoutMs, millisecond}) of
+        true -> {ok, confirmed};
+        false -> {ok, nacked};
+        timeout -> {ok, timed_out}
     catch
         Class:Reason -> {error, fmt({Class, Reason})}
     end.
@@ -191,6 +214,11 @@ with_priority({some, Priority}) -> fun(Props) -> Props#'P_basic'{priority = Prio
 %% AMQP carries per-message expiration as a shortstr of milliseconds.
 with_expiration(none) -> fun(Props) -> Props end;
 with_expiration({some, Millis}) -> fun(Props) -> Props#'P_basic'{expiration = integer_to_binary(Millis)} end.
+
+%% delivery_mode 2 = persistent (survives a broker restart on a durable queue);
+%% leaving it unset means transient.
+with_persistence(false) -> fun(Props) -> Props end;
+with_persistence(true) -> fun(Props) -> Props#'P_basic'{delivery_mode = 2} end.
 
 %% Blocking-ish poll over basic.get; a primitive kept for one-off fetches.
 get(Channel, Queue) ->

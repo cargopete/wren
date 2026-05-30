@@ -185,6 +185,67 @@ _Deferred:_ TLS toggle (needs `ssl_options` wiring) — add when a deployment ne
 
 ---
 
+# v0.2 — closing the bunnyhop gaps
+
+v0.1 reaches **capability parity on the core** of bunnyhop. These are the
+features bunnyhop has that v0.1 does **not** — genuine gaps, not stylistic
+departures. v0.2 closes them.
+
+## Milestone 10 — Publisher confirms + persistence ✅
+
+Without confirms, a publish can vanish silently on a broker hiccup — the biggest
+reliability gap for an at-least-once system.
+
+- [x] `enable_confirms` — put a channel into publisher-confirm mode (`confirm.select`)
+- [x] `publish_confirmed` — publish and wait for the broker ack (returns a `Confirm` verdict; errors on nack/timeout)
+- [x] `with_persistence` — persistent delivery mode (`delivery_mode = 2`) on `PublishOptions`
+
+_Parity target:_ `producer.rs::new_with_confirms`, `config.rs` (ProducerConfig persistence/confirms).
+
+## Milestone 11 — Concurrent delivery processing 🎯 (next)
+
+- [ ] Opt-in concurrent handling with bounded concurrency (`max_concurrent_messages`)
+- [ ] Preserve correct per-delivery settlement under concurrency
+
+_Parity target:_ `config.rs` (`process_concurrently`, `max_concurrent_messages`).
+
+## Milestone 12 — Connection pooling ❌
+
+One connection per consumer/client scales poorly under many consumers.
+
+- [ ] A pool owning N connections, handing out channels
+- [ ] Lifecycle: max connections, channels per connection, idle timeout, max lifetime
+
+_Parity target:_ `implementations/amqprs/connection.rs` (`ConnectionManager`, `PoolConfig`).
+
+## Milestone 13 — Connection stats + deeper health ❌
+
+- [ ] Stats: channels, reconnection attempts, errors
+- [ ] Health check that actually exercises the channel (declare probe), not just liveness
+
+_Parity target:_ `connection.rs::ConnectionStats`, `client.rs::health_check`.
+
+## Milestone 14 — Kind-based producer ❌
+
+- [ ] A producer with a `kind → (exchange, routing key)` map, applied at publish time
+
+_Parity target:_ `producer.rs::KindBasedProducer`.
+
+## Milestone 15 — TLS connections ❌
+
+- [ ] TLS via `amqp_params_network` `ssl_options`; a `Config` toggle + cert options
+
+_Parity target:_ `Cargo.toml` `tls` feature, `config.rs` connection settings.
+
+## Milestone 16 — Topology refinements ❌
+
+- [ ] `if_unused` / `if_empty` flags on `delete_queue`; `if_unused` on `delete_exchange`
+- [ ] Binding arguments (for headers-exchange binds)
+
+_Parity target:_ `queue_manager.rs` delete options, binding arguments.
+
+---
+
 ## Explicit departures from bunnyhop
 
 These are deliberate — capability parity without fighting Gleam:

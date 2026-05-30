@@ -67,6 +67,16 @@ pub type WrenError {
   DecodingFailed(reason: String)
 }
 
+/// The broker's verdict when waiting on a publisher confirm.
+pub type Confirm {
+  /// All messages since the last wait were acknowledged.
+  Confirmed
+  /// At least one message was negatively acknowledged.
+  Nacked
+  /// The wait expired before a verdict arrived.
+  TimedOut
+}
+
 /// How a consumer wishes a delivered message to be settled with the broker.
 pub type Confirmation {
   /// Processed successfully — remove from the queue.
@@ -409,6 +419,9 @@ pub type PublishOptions {
     mandatory: Bool,
     /// MIME content type, e.g. `"application/json"`.
     content_type: Option(String),
+    /// Persist the message (delivery mode 2) so it survives a broker restart on
+    /// a durable queue.
+    persistent: Bool,
   )
 }
 
@@ -424,6 +437,7 @@ pub fn publish_options() -> PublishOptions {
     expiration: None,
     mandatory: False,
     content_type: None,
+    persistent: False,
   )
 }
 
@@ -486,6 +500,12 @@ pub fn with_kind(options: PublishOptions, kind: String) -> PublishOptions {
   with_header(options, kind_header, kind)
 }
 
+/// Mark the message persistent (delivery mode 2) so it survives a broker
+/// restart on a durable queue.
+pub fn with_persistence(options: PublishOptions) -> PublishOptions {
+  PublishOptions(..options, persistent: True)
+}
+
 /// Publish a message with the full set of `PublishOptions`.
 pub fn publish_with_options(
   channel: Channel,
@@ -502,8 +522,34 @@ pub fn publish_with_options(
     options.expiration,
     options.mandatory,
     options.content_type,
+    options.persistent,
   )
   |> result.map_error(ChannelFailed)
+}
+
+/// Put a channel into publisher-confirm mode. Call once per channel before
+/// using `publish_confirmed`.
+pub fn enable_confirms(channel: Channel) -> Result(Nil, WrenError) {
+  ffi_enable_confirms(channel)
+  |> result.map_error(ChannelFailed)
+}
+
+/// Publish and wait (up to `timeout_ms`) for the broker to confirm the message.
+/// Requires `enable_confirms` to have been called on the channel. Returns an
+/// error if the broker nacks the message or the wait times out.
+pub fn publish_confirmed(
+  channel: Channel,
+  payload: String,
+  options: PublishOptions,
+  timeout_ms: Int,
+) -> Result(Nil, WrenError) {
+  use _ <- result.try(publish_with_options(channel, payload, options))
+  case ffi_wait_for_confirms(channel, timeout_ms) {
+    Ok(Confirmed) -> Ok(Nil)
+    Ok(Nacked) -> Error(ChannelFailed("publish was nacked by the broker"))
+    Ok(TimedOut) -> Error(ChannelFailed("publish confirmation timed out"))
+    Error(reason) -> Error(ChannelFailed(reason))
+  }
 }
 
 /// Encode a typed `value` with `codec` and publish it with the given options.
@@ -1399,7 +1445,17 @@ fn ffi_publish_full(
   expiration: Option(Int),
   mandatory: Bool,
   content_type: Option(String),
+  persistent: Bool,
 ) -> Result(Nil, String)
+
+@external(erlang, "wren_ffi", "enable_confirms")
+fn ffi_enable_confirms(channel: Channel) -> Result(Nil, String)
+
+@external(erlang, "wren_ffi", "wait_for_confirms")
+fn ffi_wait_for_confirms(
+  channel: Channel,
+  timeout_ms: Int,
+) -> Result(Confirm, String)
 
 @external(erlang, "wren_ffi", "purge_queue")
 fn ffi_purge_queue(channel: Channel, name: String) -> Result(Nil, String)

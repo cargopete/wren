@@ -4,6 +4,16 @@ All notable changes to wren are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Publisher confirms** — `enable_confirms` puts a channel into confirm mode;
+  `publish_confirmed` publishes and waits for the broker's ack (`Confirm`
+  verdict), erroring on nack or timeout.
+- **Persistent delivery** — `with_persistence` on `PublishOptions` (delivery
+  mode 2) so messages survive a broker restart on a durable queue.
+
 ## [0.1.0] — Unreleased
 
 The first release: a complete, type-safe AMQP messaging core on the BEAM.
