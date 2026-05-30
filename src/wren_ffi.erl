@@ -6,10 +6,10 @@
     open_channel/1,
     declare_queue_full/6,
     declare_exchange/7,
-    bind_queue/4,
+    bind_queue_full/5,
     unbind_queue/4,
-    delete_queue/2,
-    delete_exchange/2,
+    delete_queue_full/4,
+    delete_exchange_full/3,
     purge_queue/2,
     publish/4,
     publish_full/10,
@@ -110,8 +110,13 @@ declare_exchange(Channel, Exchange, Type, Durable, AutoDelete, Internal, Argumen
         Class:Reason -> {error, fmt({Class, Reason})}
     end.
 
-bind_queue(Channel, Queue, Exchange, RoutingKey) ->
-    Bind = #'queue.bind'{queue = Queue, exchange = Exchange, routing_key = RoutingKey},
+bind_queue_full(Channel, Queue, Exchange, RoutingKey, Arguments) ->
+    Bind = #'queue.bind'{
+        queue = Queue,
+        exchange = Exchange,
+        routing_key = RoutingKey,
+        arguments = to_amqp_args(Arguments)
+    },
     try amqp_channel:call(Channel, Bind) of
         #'queue.bind_ok'{} -> {ok, nil};
         Other -> {error, fmt(Other)}
@@ -128,16 +133,18 @@ unbind_queue(Channel, Queue, Exchange, RoutingKey) ->
         Class:Reason -> {error, fmt({Class, Reason})}
     end.
 
-delete_queue(Channel, Queue) ->
-    try amqp_channel:call(Channel, #'queue.delete'{queue = Queue}) of
+delete_queue_full(Channel, Queue, IfUnused, IfEmpty) ->
+    Delete = #'queue.delete'{queue = Queue, if_unused = IfUnused, if_empty = IfEmpty},
+    try amqp_channel:call(Channel, Delete) of
         #'queue.delete_ok'{} -> {ok, nil};
         Other -> {error, fmt(Other)}
     catch
         Class:Reason -> {error, fmt({Class, Reason})}
     end.
 
-delete_exchange(Channel, Exchange) ->
-    try amqp_channel:call(Channel, #'exchange.delete'{exchange = Exchange}) of
+delete_exchange_full(Channel, Exchange, IfUnused) ->
+    Delete = #'exchange.delete'{exchange = Exchange, if_unused = IfUnused},
+    try amqp_channel:call(Channel, Delete) of
         #'exchange.delete_ok'{} -> {ok, nil};
         Other -> {error, fmt(Other)}
     catch

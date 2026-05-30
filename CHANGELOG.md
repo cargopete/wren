@@ -25,6 +25,9 @@ All notable changes to wren are recorded here. The format follows
   apply it and stamp the `kind` header.
 - **TLS** — a `Tls` setting on `Config` (verify + CA/cert/key paths) wired
   through to the connection's `ssl_options`.
+- **Topology refinements** — `delete_queue_with` (`if_unused` / `if_empty`),
+  `delete_exchange_with` (`if_unused`), and `bind_queue_with` for binding
+  arguments (e.g. `x-match` on headers exchanges).
 
 ## [0.1.0] — Unreleased
 

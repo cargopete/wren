@@ -992,3 +992,81 @@ pub fn tls_handshake_against_plaintext_port_fails_test() {
     )
   assert result.is_error(wren.connect(config))
 }
+
+// ---------------------------------------------------------------------------
+// Topology refinements — delete guards + binding arguments
+// ---------------------------------------------------------------------------
+
+pub fn delete_queue_if_empty_guard_test() {
+  // Happy path: an empty queue deletes under if_empty.
+  let #(conn, channel) = open()
+  fresh_queue(channel, "wren_test_if_empty_ok")
+  let assert Ok(_) =
+    wren.delete_queue_with(
+      channel,
+      "wren_test_if_empty_ok",
+      if_unused: False,
+      if_empty: True,
+    )
+  wren.close_connection(conn)
+
+  // Guard path: a non-empty queue refuses. A failed precondition closes the
+  // channel, so this runs on its own connection.
+  let #(conn2, channel2) = open()
+  fresh_queue(channel2, "wren_test_if_empty_no")
+  let assert Ok(_) =
+    wren.publish(
+      channel2,
+      exchange: "",
+      routing_key: "wren_test_if_empty_no",
+      payload: "blocker",
+    )
+  assert result.is_error(wren.delete_queue_with(
+    channel2,
+    "wren_test_if_empty_no",
+    if_unused: False,
+    if_empty: True,
+  ))
+  wren.close_connection(conn2)
+
+  // Tidy up the leftover queue on a fresh channel.
+  let #(conn3, channel3) = open()
+  let _ = wren.delete_queue(channel3, "wren_test_if_empty_no")
+  wren.close_connection(conn3)
+}
+
+pub fn headers_exchange_binding_arguments_route_test() {
+  let #(connection, channel) = open()
+  let assert Ok(_) =
+    wren.declare_exchange(
+      channel,
+      "wren_test_headers_ex",
+      wren.Headers,
+      wren.exchange_options(),
+    )
+  fresh_queue(channel, "wren_test_headers_q")
+  // Match all of: department = sales. The matcher lives in the binding args.
+  let assert Ok(_) =
+    wren.bind_queue_with(
+      channel,
+      queue: "wren_test_headers_q",
+      exchange: "wren_test_headers_ex",
+      routing_key: "",
+      arguments: [
+        #("x-match", wren.StringArg("all")),
+        #("department", wren.StringArg("sales")),
+      ],
+    )
+
+  let options =
+    wren.publish_options()
+    |> wren.to_exchange("wren_test_headers_ex")
+    |> wren.with_header("department", "sales")
+  let assert Ok(_) = wren.publish_with_options(channel, "for sales", options)
+
+  let assert Ok(payload) = wren.get(channel, "wren_test_headers_q")
+  assert payload == "for sales"
+
+  let assert Ok(_) = wren.delete_exchange(channel, "wren_test_headers_ex")
+  wren.close_connection(connection)
+}

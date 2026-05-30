@@ -363,7 +363,19 @@ pub fn bind_queue(
   exchange exchange: String,
   routing_key routing_key: String,
 ) -> Result(Nil, WrenError) {
-  ffi_bind_queue(channel, queue, exchange, routing_key)
+  bind_queue_with(channel, queue, exchange, routing_key, [])
+}
+
+/// Bind a queue with binding arguments — needed for `Headers` exchanges, where
+/// the `x-match` argument and header matchers live on the binding.
+pub fn bind_queue_with(
+  channel: Channel,
+  queue queue: String,
+  exchange exchange: String,
+  routing_key routing_key: String,
+  arguments arguments: List(#(String, Arg)),
+) -> Result(Nil, WrenError) {
+  ffi_bind_queue_full(channel, queue, exchange, routing_key, arguments)
   |> result.map_error(ChannelFailed)
 }
 
@@ -378,18 +390,38 @@ pub fn unbind_queue(
   |> result.map_error(ChannelFailed)
 }
 
-/// Delete a queue (and any messages still in it).
+/// Delete a queue unconditionally (and any messages still in it).
 pub fn delete_queue(channel: Channel, name: String) -> Result(Nil, WrenError) {
-  ffi_delete_queue(channel, name)
+  delete_queue_with(channel, name, if_unused: False, if_empty: False)
+}
+
+/// Delete a queue, optionally only `if_unused` (no consumers) and/or
+/// `if_empty` (no messages). The delete fails if a guard isn't met.
+pub fn delete_queue_with(
+  channel: Channel,
+  name: String,
+  if_unused if_unused: Bool,
+  if_empty if_empty: Bool,
+) -> Result(Nil, WrenError) {
+  ffi_delete_queue_full(channel, name, if_unused, if_empty)
   |> result.map_error(ChannelFailed)
 }
 
-/// Delete an exchange.
+/// Delete an exchange unconditionally.
 pub fn delete_exchange(
   channel: Channel,
   name: String,
 ) -> Result(Nil, WrenError) {
-  ffi_delete_exchange(channel, name)
+  delete_exchange_with(channel, name, if_unused: False)
+}
+
+/// Delete an exchange, optionally only `if_unused` (no bindings).
+pub fn delete_exchange_with(
+  channel: Channel,
+  name: String,
+  if_unused if_unused: Bool,
+) -> Result(Nil, WrenError) {
+  ffi_delete_exchange_full(channel, name, if_unused)
   |> result.map_error(ChannelFailed)
 }
 
@@ -1735,12 +1767,13 @@ fn ffi_declare_exchange(
   arguments: List(#(String, Arg)),
 ) -> Result(Nil, String)
 
-@external(erlang, "wren_ffi", "bind_queue")
-fn ffi_bind_queue(
+@external(erlang, "wren_ffi", "bind_queue_full")
+fn ffi_bind_queue_full(
   channel: Channel,
   queue: String,
   exchange: String,
   routing_key: String,
+  arguments: List(#(String, Arg)),
 ) -> Result(Nil, String)
 
 @external(erlang, "wren_ffi", "unbind_queue")
@@ -1751,11 +1784,20 @@ fn ffi_unbind_queue(
   routing_key: String,
 ) -> Result(Nil, String)
 
-@external(erlang, "wren_ffi", "delete_queue")
-fn ffi_delete_queue(channel: Channel, name: String) -> Result(Nil, String)
+@external(erlang, "wren_ffi", "delete_queue_full")
+fn ffi_delete_queue_full(
+  channel: Channel,
+  name: String,
+  if_unused: Bool,
+  if_empty: Bool,
+) -> Result(Nil, String)
 
-@external(erlang, "wren_ffi", "delete_exchange")
-fn ffi_delete_exchange(channel: Channel, name: String) -> Result(Nil, String)
+@external(erlang, "wren_ffi", "delete_exchange_full")
+fn ffi_delete_exchange_full(
+  channel: Channel,
+  name: String,
+  if_unused: Bool,
+) -> Result(Nil, String)
 
 @external(erlang, "wren_ffi", "publish")
 fn ffi_publish(

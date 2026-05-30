@@ -253,10 +253,10 @@ _Note:_ the dev broker is plaintext, so the successful-handshake path isn't
 integration-tested here; the test confirms TLS is wired by asserting a handshake
 against the plaintext port fails (as it must). A TLS broker would round it out.
 
-## Milestone 16 — Topology refinements 🎯 (next)
+## Milestone 16 — Topology refinements ✅
 
-- [ ] `if_unused` / `if_empty` flags on `delete_queue`; `if_unused` on `delete_exchange`
-- [ ] Binding arguments (for headers-exchange binds)
+- [x] `delete_queue_with` (`if_unused` / `if_empty`); `delete_exchange_with` (`if_unused`)
+- [x] `bind_queue_with` — binding arguments (e.g. `x-match` for headers exchanges)
 
 _Parity target:_ `queue_manager.rs` delete options, binding arguments.
 
