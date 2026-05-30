@@ -8,11 +8,13 @@
 
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Pid}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import gleam/result
+import wren/codec.{type Codec}
 
 // ===========================================================================
 // Types
@@ -38,12 +40,25 @@ pub type Message {
   )
 }
 
+/// The header carrying a message's kind — the discriminator a router dispatches
+/// on. Matches the convention used by the Rust `bunnyhop` crate.
+pub const kind_header = "kind"
+
+/// Read the `kind` header off a delivered message, if present.
+pub fn message_kind(message: Message) -> Result(String, Nil) {
+  list.key_find(message.headers, kind_header)
+}
+
 /// Anything that can go wrong talking to the broker.
 pub type WrenError {
   /// Failed to establish the underlying AMQP connection.
   ConnectionFailed(reason: String)
   /// A channel-level operation (declare, publish, consume, …) failed.
   ChannelFailed(reason: String)
+  /// A value could not be serialised before publishing.
+  EncodingFailed(reason: String)
+  /// A payload could not be deserialised into the expected type.
+  DecodingFailed(reason: String)
 }
 
 /// How a consumer wishes a delivered message to be settled with the broker.
@@ -204,6 +219,12 @@ pub fn with_content_type(
   PublishOptions(..options, content_type: Some(content_type))
 }
 
+/// Set the message `kind` header — the discriminator a consumer's router uses
+/// to pick a handler. Sugar over `with_header(options, kind_header, kind)`.
+pub fn with_kind(options: PublishOptions, kind: String) -> PublishOptions {
+  with_header(options, kind_header, kind)
+}
+
 /// Publish a message with the full set of `PublishOptions`.
 pub fn publish_with_options(
   channel: Channel,
@@ -222,6 +243,38 @@ pub fn publish_with_options(
     options.content_type,
   )
   |> result.map_error(ChannelFailed)
+}
+
+/// Encode a typed `value` with `codec` and publish it with the given options.
+///
+/// Pair with `with_kind` so consumers can route on the message kind:
+/// `publish_options() |> route("orders") |> with_kind("order.created")`.
+pub fn publish_encoded(
+  channel: Channel,
+  value: a,
+  codec: Codec(a),
+  options: PublishOptions,
+) -> Result(Nil, WrenError) {
+  case codec.encode(value) {
+    Ok(payload) -> publish_with_options(channel, payload, options)
+    Error(error) -> Error(EncodingFailed(codec_error_reason(error)))
+  }
+}
+
+/// Decode a delivered message's payload into a typed value with `codec`.
+pub fn decode_message(
+  message: Message,
+  codec: Codec(a),
+) -> Result(a, WrenError) {
+  codec.decode(message.payload)
+  |> result.map_error(fn(error) { DecodingFailed(codec_error_reason(error)) })
+}
+
+fn codec_error_reason(error: codec.CodecError) -> String {
+  case error {
+    codec.EncodeError(reason) -> reason
+    codec.DecodeError(reason) -> reason
+  }
 }
 
 /// Fetch a single message from a queue (polls briefly). A primitive for

@@ -60,5 +60,7 @@ fn describe(error: WrenError) -> String {
   case error {
     wren.ConnectionFailed(reason) -> "connection failed: " <> reason
     wren.ChannelFailed(reason) -> "channel failed: " <> reason
+    wren.EncodingFailed(reason) -> "encoding failed: " <> reason
+    wren.DecodingFailed(reason) -> "decoding failed: " <> reason
   }
 }

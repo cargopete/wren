@@ -2,6 +2,7 @@
 //// one up with `docker compose up -d` (or rely on the CI service container).
 //// Credentials match the project's `docker-compose.yml` (`wren` / `wren`).
 
+import fixtures.{Order}
 import gleam/erlang/process
 import gleam/list
 import gleam/result
@@ -143,6 +144,36 @@ pub fn supervised_consumer_receives_delivery_test() {
   assert received.routing_key == "wren_test_consume"
   assert list.key_find(received.headers, "kind") == Ok("greeting")
   assert list.key_find(received.headers, "trace-id") == Ok("abc-123")
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}
+
+pub fn publish_encoded_typed_round_trip_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_typed")
+
+  let inbox = process.new_subject()
+  let handler = fn(message: wren.Message) -> wren.Confirmation {
+    process.send(inbox, message)
+    wren.Ack
+  }
+  let assert Ok(consumer) =
+    wren.start_consumer(channel, "wren_test_typed", handler)
+
+  let order = Order(id: "o-99", qty: 7)
+  let options =
+    wren.publish_options()
+    |> wren.route("wren_test_typed")
+    |> wren.with_kind("order.created")
+  let assert Ok(_) =
+    wren.publish_encoded(channel, order, fixtures.order_codec(), options)
+
+  let assert Ok(received) = process.receive(from: inbox, within: 5000)
+  // The kind header drives routing; the codec turns the payload back into a type.
+  assert wren.message_kind(received) == Ok("order.created")
+  let assert Ok(decoded) = wren.decode_message(received, fixtures.order_codec())
+  assert decoded == order
 
   wren.stop(consumer)
   wren.close_connection(connection)

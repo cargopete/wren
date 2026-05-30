@@ -49,21 +49,25 @@ _Parity target:_ `producer.rs`, `producer.rs::RabbitMqProduceOptions`.
 
 ---
 
-## Milestone 2 — Typed messages + codec 🎯 (next)
+## Milestone 2 — Typed messages + codec ✅
 
 The foundation for routing. Replaces bunnyhop's `Message`/`FromMessage`/`ToMessage`
 derives and `Codec` trait with explicit Gleam values.
 
-- [ ] `Codec(a)` abstraction: `encode: fn(a) -> BitArray`, `decode: fn(BitArray) -> Result(a, _)`
-- [ ] `json_codec` built on `gleam_json` (parity with bunnyhop's `Json`)
-- [ ] `MessageKind` concept: a message carries a `kind` string written to the `kind` header
-- [ ] Encode/decode round-trip helpers + the `kind` header convention (`KIND_HEADER`)
+- [x] `Codec(a)` abstraction (`wren/codec`): `encode`/`decode` with `CodecError`
+- [x] `codec.json` built on `gleam_json` (parity with bunnyhop's `Json`); `codec.string` identity codec
+- [x] Kind convention: `kind_header` constant, `with_kind` option sugar, `message_kind` reader
+- [x] Typed publish/decode helpers: `publish_encoded`, `decode_message`
+- [x] Round-trip tests (pure) + typed publish→consume→decode end-to-end
 
 _Parity target:_ `consumer/codec.rs`, `message.rs`, `fathom_messaging` derives.
 
+_Note:_ payloads stay `String` (UTF-8 JSON) for now; a `BitArray` path can come
+later if a binary codec is needed.
+
 ---
 
-## Milestone 3 — Router-style consumer ❌
+## Milestone 3 — Router-style consumer 🎯 (next)
 
 The headline ergonomic feature. bunnyhop's `Router` + `MessageConsumer` builder,
 minus the extractor magic.
