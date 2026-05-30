@@ -1070,3 +1070,77 @@ pub fn headers_exchange_binding_arguments_route_test() {
   let assert Ok(_) = wren.delete_exchange(channel, "wren_test_headers_ex")
   wren.close_connection(connection)
 }
+
+// ---------------------------------------------------------------------------
+// Consumer subscribe options
+// ---------------------------------------------------------------------------
+
+pub fn auto_ack_consumer_receives_delivery_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_autoack")
+
+  let inbox = process.new_subject()
+  let handler = fn(message: wren.Message) -> wren.Confirmation {
+    process.send(inbox, message)
+    wren.Ack
+  }
+  // With auto-ack the broker acks on delivery; settlement is skipped.
+  let options = wren.consume_options() |> wren.with_auto_ack()
+  let assert Ok(consumer) =
+    wren.start_consumer_with_options(
+      channel,
+      "wren_test_autoack",
+      handler,
+      options,
+    )
+
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_test_autoack",
+      payload: "auto",
+    )
+  let assert Ok(received) = process.receive(from: inbox, within: 5000)
+  assert received.payload == "auto"
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}
+
+pub fn consumer_with_tag_and_arguments_subscribes_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_consopts")
+
+  let inbox = process.new_subject()
+  let handler = fn(message: wren.Message) -> wren.Confirmation {
+    process.send(inbox, message)
+    wren.Ack
+  }
+  // A custom tag, consumer-priority argument, and no_local all pass through.
+  let options =
+    wren.consume_options()
+    |> wren.with_consumer_tag("wren-tag")
+    |> wren.with_consume_arguments([#("x-priority", wren.IntArg(5))])
+    |> wren.with_no_local()
+  let assert Ok(consumer) =
+    wren.start_consumer_with_options(
+      channel,
+      "wren_test_consopts",
+      handler,
+      options,
+    )
+
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_test_consopts",
+      payload: "tagged",
+    )
+  let assert Ok(received) = process.receive(from: inbox, within: 5000)
+  assert received.payload == "tagged"
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}

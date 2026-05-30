@@ -16,7 +16,7 @@
     enable_confirms/1,
     wait_for_confirms/2,
     get/2,
-    subscribe/3,
+    subscribe/8,
     set_qos/4,
     settle/3,
     decode_event/1,
@@ -262,14 +262,25 @@ get(Channel, Queue, Retries) ->
 
 %% Register `Pid` (a Gleam actor) as the consumer for `Queue`. Deliveries then
 %% arrive in that process's mailbox as raw AMQP records, decoded by decode_event/1.
-subscribe(Channel, Queue, Pid) ->
-    Consume = #'basic.consume'{queue = Queue},
+subscribe(Channel, Queue, Pid, NoAck, Exclusive, NoLocal, ConsumerTag, Arguments) ->
+    Consume = #'basic.consume'{
+        queue = Queue,
+        no_ack = NoAck,
+        exclusive = Exclusive,
+        no_local = NoLocal,
+        consumer_tag = consumer_tag(ConsumerTag),
+        arguments = to_amqp_args(Arguments)
+    },
     try amqp_channel:subscribe(Channel, Consume, Pid) of
         #'basic.consume_ok'{} -> {ok, nil};
         Other -> {error, fmt(Other)}
     catch
         Class:Reason -> {error, fmt({Class, Reason})}
     end.
+
+%% An empty tag asks the broker to generate one.
+consumer_tag(none) -> <<"">>;
+consumer_tag({some, Tag}) -> Tag.
 
 %% Set channel prefetch (QoS): how many unacked messages the broker will hand
 %% out before waiting for acks.

@@ -30,11 +30,13 @@ And, since v0.2:
 - ✅ Concurrent delivery processing, bounded by prefetch (`start_consumer_concurrent`)
 - ✅ Connection pool (`start_pool`) with round-robin channel handout and `pool_stats`
 - ✅ Active `health_check`, kind-based producer (`publish_for_kind`), TLS, and topology guards
+- ✅ Consumer subscribe options — auto-ack, exclusive, no-local, consumer tag, subscription arguments
 
-This brings wren to **capability parity** with the production `bunnyhop` crate.
+This brings wren to **feature parity** with the production `bunnyhop` crate.
 The only bunnyhop features expressed differently are deliberate, idiomatic-Gleam
 choices — no axum-style extractors, dependency injection, or derive macros;
-handlers take an explicit `Message` and codecs are values. See the roadmap's
+handlers take an explicit `Message` and codecs are values. (The one omitted flag,
+producer `immediate`, was removed from RabbitMQ years ago.) See the roadmap's
 "Explicit departures" for the full list.
 
 See [`ROADMAP.md`](./ROADMAP.md) for how each piece maps to a production AMQP

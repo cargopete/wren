@@ -260,6 +260,19 @@ against the plaintext port fails (as it must). A TLS broker would round it out.
 
 _Parity target:_ `queue_manager.rs` delete options, binding arguments.
 
+## Milestone 17 — Consumer subscribe options ✅
+
+The last cluster of `basic.consume` knobs from bunnyhop's `ConsumerConfig`.
+
+- [x] `ConsumeOptions` — `auto_ack`, `exclusive`, `no_local`, `consumer_tag`, subscription `arguments`
+- [x] `start_consumer_with_options`; `with_consume_options` on recoverable consumers
+- [x] `auto_ack` skips settlement (the broker already acked on delivery)
+
+_Parity target:_ `config.rs::ConsumerConfig`.
+
+_Note:_ the producer `immediate` flag is intentionally omitted — it was removed
+from RabbitMQ years ago; bunnyhop carries a dead field.
+
 ---
 
 ## Explicit departures from bunnyhop

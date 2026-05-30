@@ -4,6 +4,17 @@ All notable changes to wren are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-05-30
+
+Completes feature parity with `bunnyhop`.
+
+### Added
+
+- **Consumer subscribe options** — `ConsumeOptions` (`auto_ack`, `exclusive`,
+  `no_local`, `consumer_tag`, subscription `arguments`) via
+  `start_consumer_with_options` and `with_consume_options` on recoverable
+  consumers. `auto_ack` skips settlement.
+
 ## [0.2.0] — 2026-05-30
 
 Closes the remaining capability gaps with the `bunnyhop` crate.
@@ -66,5 +77,6 @@ The first cut: a complete, type-safe AMQP messaging core on the BEAM.
   an `on_connect` hook.
 - **Examples** — runnable `wren/examples/{router,retry,recovery}` and `wren/demo`.
 
+[0.2.1]: https://github.com/cargopete/wren/releases/tag/v0.2.1
 [0.2.0]: https://github.com/cargopete/wren/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cargopete/wren/releases/tag/v0.1.0

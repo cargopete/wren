@@ -150,6 +150,67 @@ pub fn exchange_options() -> ExchangeOptions {
   )
 }
 
+/// How a consumer subscribes (the `basic.consume` knobs). Build with
+/// `consume_options` and refine with the `with_*` helpers.
+pub type ConsumeOptions {
+  ConsumeOptions(
+    /// Let the broker consider messages acknowledged on delivery. With this on,
+    /// the handler's `Confirmation` can't be honoured — the message is already
+    /// gone — so settlement is skipped.
+    auto_ack: Bool,
+    /// Request to be the only consumer on the queue.
+    exclusive: Bool,
+    /// Don't deliver messages published on this connection back to it.
+    no_local: Bool,
+    /// A specific consumer tag (the broker generates one if `None`).
+    consumer_tag: Option(String),
+    /// Extra `x-*` arguments for the subscription (e.g. consumer priority).
+    arguments: List(#(String, Arg)),
+  )
+}
+
+/// Default subscription: manual ack, non-exclusive, broker-assigned tag.
+pub fn consume_options() -> ConsumeOptions {
+  ConsumeOptions(
+    auto_ack: False,
+    exclusive: False,
+    no_local: False,
+    consumer_tag: None,
+    arguments: [],
+  )
+}
+
+/// Acknowledge messages automatically on delivery (no manual settlement).
+pub fn with_auto_ack(options: ConsumeOptions) -> ConsumeOptions {
+  ConsumeOptions(..options, auto_ack: True)
+}
+
+/// Be the exclusive consumer on the queue.
+pub fn with_exclusive(options: ConsumeOptions) -> ConsumeOptions {
+  ConsumeOptions(..options, exclusive: True)
+}
+
+/// Don't have the broker echo this connection's own publishes back to it.
+pub fn with_no_local(options: ConsumeOptions) -> ConsumeOptions {
+  ConsumeOptions(..options, no_local: True)
+}
+
+/// Use a specific consumer tag.
+pub fn with_consumer_tag(
+  options: ConsumeOptions,
+  tag: String,
+) -> ConsumeOptions {
+  ConsumeOptions(..options, consumer_tag: Some(tag))
+}
+
+/// Set extra `x-*` subscription arguments.
+pub fn with_consume_arguments(
+  options: ConsumeOptions,
+  arguments: List(#(String, Arg)),
+) -> ConsumeOptions {
+  ConsumeOptions(..options, arguments:)
+}
+
 /// TLS settings for a connection. `NoTls` is plaintext; `Tls` enables it.
 pub type Tls {
   /// Plaintext connection (the default).
@@ -1054,6 +1115,7 @@ type State {
     handler: fn(Message) -> Confirmation,
     retry: Option(RetryInfrastructure),
     concurrency: Int,
+    auto_ack: Bool,
   )
 }
 
@@ -1081,7 +1143,18 @@ pub fn start_consumer(
   queue: String,
   handler: fn(Message) -> Confirmation,
 ) -> Result(Consumer, WrenError) {
-  start_consumer_internal(channel, queue, handler, None, 1)
+  start_consumer_internal(channel, queue, handler, None, 1, consume_options())
+}
+
+/// Like `start_consumer`, but with explicit `ConsumeOptions` (auto-ack,
+/// exclusive, consumer tag, subscription arguments, …).
+pub fn start_consumer_with_options(
+  channel: Channel,
+  queue: String,
+  handler: fn(Message) -> Confirmation,
+  options: ConsumeOptions,
+) -> Result(Consumer, WrenError) {
+  start_consumer_internal(channel, queue, handler, None, 1, options)
 }
 
 /// Like `start_consumer`, but processes up to `max_concurrent` deliveries at
@@ -1100,6 +1173,7 @@ pub fn start_consumer_concurrent(
     handler,
     None,
     int.max(max_concurrent, 1),
+    consume_options(),
   )
 }
 
@@ -1113,7 +1187,14 @@ pub fn start_consumer_with_retry(
   infra: RetryInfrastructure,
 ) -> Result(Consumer, WrenError) {
   use _ <- result.try(setup_retry(channel, infra))
-  start_consumer_internal(channel, infra.main_queue, handler, Some(infra), 1)
+  start_consumer_internal(
+    channel,
+    infra.main_queue,
+    handler,
+    Some(infra),
+    1,
+    consume_options(),
+  )
 }
 
 fn start_consumer_internal(
@@ -1122,8 +1203,16 @@ fn start_consumer_internal(
   handler: fn(Message) -> Confirmation,
   retry: Option(RetryInfrastructure),
   concurrency: Int,
+  consume: ConsumeOptions,
 ) -> Result(Consumer, WrenError) {
-  start_supervised(consumer_builder(channel, queue, handler, retry, concurrency))
+  start_supervised(consumer_builder(
+    channel,
+    queue,
+    handler,
+    retry,
+    concurrency,
+    consume,
+  ))
 }
 
 /// Stop a running consumer and its supervisor.
@@ -1141,6 +1230,7 @@ fn consumer_builder(
   handler: fn(Message) -> Confirmation,
   retry: Option(RetryInfrastructure),
   concurrency: Int,
+  consume: ConsumeOptions,
 ) {
   actor.new_with_initialiser(5000, fn(subject) {
     // init runs in the actor's own process, so `self` is the consumer pid.
@@ -1152,12 +1242,18 @@ fn consumer_builder(
       }
       False -> Nil
     }
-    case ffi_subscribe(channel, queue, process.self()) {
+    case do_subscribe(channel, queue, consume) {
       Ok(_) -> {
         let selector =
           process.new_selector()
           |> process.select_other(decode_event)
-        actor.initialised(State(channel:, handler:, retry:, concurrency:))
+        actor.initialised(State(
+          channel:,
+          handler:,
+          retry:,
+          concurrency:,
+          auto_ack: consume.auto_ack,
+        ))
         |> actor.selecting(selector)
         |> actor.returning(subject)
         |> Ok
@@ -1166,6 +1262,24 @@ fn consumer_builder(
     }
   })
   |> actor.on_message(handle_event)
+}
+
+/// Subscribe `process.self()` to `queue` with the given options.
+fn do_subscribe(
+  channel: Channel,
+  queue: String,
+  consume: ConsumeOptions,
+) -> Result(Nil, String) {
+  ffi_subscribe(
+    channel,
+    queue,
+    process.self(),
+    consume.auto_ack,
+    consume.exclusive,
+    consume.no_local,
+    consume.consumer_tag,
+    consume.arguments,
+  )
 }
 
 fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
@@ -1179,6 +1293,7 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
         message,
         tag,
         state.concurrency,
+        state.auto_ack,
       )
       actor.continue(state)
     }
@@ -1193,7 +1308,8 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
 /// Run the handler and settle the delivery. With concurrency, each delivery
 /// runs in its own (unlinked) process so handlers proceed in parallel and a
 /// crashing handler can't take the consumer down; the broker's prefetch bounds
-/// how many are in flight.
+/// how many are in flight. Under `auto_ack`, the broker already acked on
+/// delivery, so the handler runs but settlement is skipped.
 fn process_delivery(
   channel: Channel,
   retry: Option(RetryInfrastructure),
@@ -1201,16 +1317,21 @@ fn process_delivery(
   message: Message,
   tag: Int,
   concurrency: Int,
+  auto_ack: Bool,
 ) -> Nil {
+  let work = fn() {
+    let confirmation = handler(message)
+    case auto_ack {
+      True -> Nil
+      False -> settle(channel, retry, message, tag, confirmation)
+    }
+  }
   case concurrency > 1 {
     True -> {
-      let _ =
-        process.spawn_unlinked(fn() {
-          settle(channel, retry, message, tag, handler(message))
-        })
+      let _ = process.spawn_unlinked(work)
       Nil
     }
-    False -> settle(channel, retry, message, tag, handler(message))
+    False -> work()
   }
 }
 
@@ -1463,11 +1584,13 @@ pub type RecoverableOptions {
     initial_backoff_ms: Int,
     max_backoff_ms: Int,
     max_concurrent: Int,
+    consume: ConsumeOptions,
   )
 }
 
-/// Default recoverable options: no prefetch, no retry, serial processing, a
-/// no-op connect hook, and reconnection backoff from 500ms up to 30s.
+/// Default recoverable options: no prefetch, no retry, serial processing,
+/// default subscription, a no-op connect hook, and reconnection backoff from
+/// 500ms up to 30s.
 pub fn recoverable_options() -> RecoverableOptions {
   RecoverableOptions(
     prefetch: None,
@@ -1476,7 +1599,17 @@ pub fn recoverable_options() -> RecoverableOptions {
     initial_backoff_ms: 500,
     max_backoff_ms: 30_000,
     max_concurrent: 1,
+    consume: consume_options(),
   )
+}
+
+/// Use explicit `ConsumeOptions` (auto-ack, exclusive, consumer tag, …) for the
+/// recoverable consumer's subscription.
+pub fn with_consume_options(
+  options: RecoverableOptions,
+  consume: ConsumeOptions,
+) -> RecoverableOptions {
+  RecoverableOptions(..options, consume:)
 }
 
 /// Process up to `max_concurrent` deliveries at once (each in its own process).
@@ -1631,7 +1764,7 @@ fn establish(
     None -> queue
   }
   use _ <- result.try(
-    ffi_subscribe(channel, subscribe_queue, process.self())
+    do_subscribe(channel, subscribe_queue, options.consume)
     |> result.map_error(ChannelFailed),
   )
   let _ = process.monitor(connection_pid(connection))
@@ -1653,6 +1786,7 @@ fn handle_recoverable_event(
         message,
         tag,
         state.options.max_concurrent,
+        state.options.consume.auto_ack,
       )
       actor.continue(state)
     }
@@ -1668,7 +1802,7 @@ fn handle_recoverable_event(
         Some(infra) -> infra.main_queue
         None -> state.queue
       }
-      case ffi_subscribe(state.channel, subscribe_queue, process.self()) {
+      case do_subscribe(state.channel, subscribe_queue, state.options.consume) {
         Ok(_) -> actor.continue(state)
         Error(_) -> {
           let #(connection, channel) = reconnect(state)
@@ -1841,6 +1975,11 @@ fn ffi_subscribe(
   channel: Channel,
   queue: String,
   pid: Pid,
+  auto_ack: Bool,
+  exclusive: Bool,
+  no_local: Bool,
+  consumer_tag: Option(String),
+  arguments: List(#(String, Arg)),
 ) -> Result(Nil, String)
 
 @external(erlang, "wren_ffi", "set_qos")
