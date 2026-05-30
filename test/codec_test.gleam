@@ -13,19 +13,19 @@ pub fn json_codec_round_trips_test() {
 
 pub fn json_codec_rejects_garbage_test() {
   let order_codec = fixtures.order_codec()
-  assert result.is_error(codec.decode(order_codec, "not valid json"))
+  assert result.is_error(codec.decode(order_codec, <<"not valid json">>))
 }
 
 pub fn json_codec_rejects_wrong_shape_test() {
   let order_codec = fixtures.order_codec()
   // Right JSON, wrong fields.
-  assert result.is_error(codec.decode(order_codec, "{\"id\":\"a1\"}"))
+  assert result.is_error(codec.decode(order_codec, <<"{\"id\":\"a1\"}">>))
 }
 
 pub fn string_codec_round_trips_test() {
   let string_codec = codec.string()
   let assert Ok(payload) = codec.encode(string_codec, "hello")
-  assert payload == "hello"
-  let assert Ok(decoded) = codec.decode(string_codec, "hello")
+  assert payload == <<"hello">>
+  let assert Ok(decoded) = codec.decode(string_codec, <<"hello">>)
   assert decoded == "hello"
 }

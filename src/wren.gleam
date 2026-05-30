@@ -6,6 +6,7 @@
 //// a supervisor, so a crash means the runtime restarts it and re-subscribes —
 //// no hand-rolled reconnection loops.
 
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Pid}
@@ -37,10 +38,11 @@ pub opaque type Consumer {
   Consumer(supervisor: Pid)
 }
 
-/// A delivered message handed to a consumer's handler.
+/// A delivered message handed to a consumer's handler. The `payload` is raw
+/// bytes; use `message_text` for the common UTF-8 case, or a codec to decode it.
 pub type Message {
   Message(
-    payload: String,
+    payload: BitArray,
     routing_key: String,
     headers: List(#(String, String)),
     /// The AMQP `correlation_id` property, if set (used to pair RPC replies).
@@ -59,6 +61,11 @@ pub const kind_header = "kind"
 /// Read the `kind` header off a delivered message, if present.
 pub fn message_kind(message: Message) -> Result(String, Nil) {
   list.key_find(message.headers, kind_header)
+}
+
+/// The message payload as UTF-8 text, or `Error(Nil)` if it isn't valid UTF-8.
+pub fn message_text(message: Message) -> Result(String, Nil) {
+  bit_array.to_string(message.payload)
 }
 
 /// Anything that can go wrong talking to the broker.
@@ -326,6 +333,16 @@ fn int_or(value: Result(String, Nil), default: Int) -> Int {
   }
 }
 
+/// Check a `Config` is well-formed (non-empty host, valid port). Useful after
+/// `config_from_env`, which is lenient and falls back to defaults.
+pub fn validate_config(config: Config) -> Result(Nil, WrenError) {
+  case config.host == "", config.port < 1 || config.port > 65_535 {
+    True, _ -> Error(ConnectionFailed("host must not be empty"))
+    _, True -> Error(ConnectionFailed("port must be between 1 and 65535"))
+    False, False -> Ok(Nil)
+  }
+}
+
 // ===========================================================================
 // Connection & channel lifecycle
 // ===========================================================================
@@ -385,6 +402,16 @@ pub fn qos_with(
 /// Declare a durable queue with default options (idempotent).
 pub fn declare_queue(channel: Channel, name: String) -> Result(Nil, WrenError) {
   declare_queue_with(channel, name, queue_options())
+}
+
+/// Check that a queue exists without creating it (a passive declare). Errors if
+/// it doesn't exist. Note: a failed passive declare closes the channel.
+pub fn declare_queue_passive(
+  channel: Channel,
+  name: String,
+) -> Result(Nil, WrenError) {
+  ffi_declare_queue_passive(channel, name)
+  |> result.map_error(ChannelFailed)
 }
 
 /// Declare a queue with explicit options, including AMQP `x-*` arguments.
@@ -507,16 +534,35 @@ pub fn purge_queue(channel: Channel, name: String) -> Result(Nil, WrenError) {
   |> result.map_error(ChannelFailed)
 }
 
-/// Publish a message to an exchange with a routing key.
+/// Publish raw bytes to an exchange with a routing key.
 /// Use `""` as the exchange to publish straight to a queue by name.
 pub fn publish(
   channel: Channel,
   exchange exchange: String,
   routing_key routing_key: String,
-  payload payload: String,
+  payload payload: BitArray,
 ) -> Result(Nil, WrenError) {
-  ffi_publish(channel, exchange, routing_key, payload)
-  |> result.map_error(ChannelFailed)
+  publish_with_options(
+    channel,
+    payload,
+    publish_options() |> to_exchange(exchange) |> route(routing_key),
+  )
+}
+
+/// Publish a UTF-8 `text` payload — the common case. Sugar over `publish` with
+/// the text encoded to bytes.
+pub fn publish_text(
+  channel: Channel,
+  exchange exchange: String,
+  routing_key routing_key: String,
+  text text: String,
+) -> Result(Nil, WrenError) {
+  publish(
+    channel,
+    exchange:,
+    routing_key:,
+    payload: bit_array.from_string(text),
+  )
 }
 
 // ===========================================================================
@@ -690,7 +736,7 @@ pub fn with_timestamp(options: PublishOptions, seconds: Int) -> PublishOptions {
 /// Publish a message with the full set of `PublishOptions`.
 pub fn publish_with_options(
   channel: Channel,
-  payload: String,
+  payload: BitArray,
   options: PublishOptions,
 ) -> Result(Nil, WrenError) {
   ffi_publish_full(
@@ -721,7 +767,7 @@ pub fn enable_confirms(channel: Channel) -> Result(Nil, WrenError) {
 /// error if the broker nacks the message or the wait times out.
 pub fn publish_confirmed(
   channel: Channel,
-  payload: String,
+  payload: BitArray,
   options: PublishOptions,
   timeout_ms: Int,
 ) -> Result(Nil, WrenError) {
@@ -750,7 +796,7 @@ pub fn queue_target(queue: String) -> Target {
 
 /// One message that couldn't be published, with the reason.
 pub type BatchFailure {
-  BatchFailure(target: Target, payload: String, error: WrenError)
+  BatchFailure(target: Target, payload: BitArray, error: WrenError)
 }
 
 /// The outcome of a batch publish: how many succeeded, and which failed.
@@ -764,7 +810,7 @@ pub type BatchResult {
 /// confirms on the channel and check the result's `failures`.
 pub fn publish_batch(
   channel: Channel,
-  messages: List(#(Target, String)),
+  messages: List(#(Target, BitArray)),
   options: PublishOptions,
 ) -> BatchResult {
   let failures =
@@ -785,7 +831,7 @@ pub fn publish_batch(
 /// Publish one `payload` to several targets.
 pub fn publish_to_targets(
   channel: Channel,
-  payload: String,
+  payload: BitArray,
   targets: List(Target),
   options: PublishOptions,
 ) -> BatchResult {
@@ -799,7 +845,7 @@ pub fn publish_to_targets(
 /// Like `publish_batch`, but re-publishes failures up to `max_attempts` times.
 pub fn publish_batch_with_retry(
   channel: Channel,
-  messages: List(#(Target, String)),
+  messages: List(#(Target, BitArray)),
   options: PublishOptions,
   max_attempts: Int,
 ) -> BatchResult {
@@ -808,7 +854,7 @@ pub fn publish_batch_with_retry(
 
 fn retry_batch(
   channel: Channel,
-  messages: List(#(Target, String)),
+  messages: List(#(Target, BitArray)),
   options: PublishOptions,
   attempts_left: Int,
   published_so_far: Int,
@@ -832,7 +878,7 @@ fn retry_batch(
 fn publish_to_target(
   channel: Channel,
   target: Target,
-  payload: String,
+  payload: BitArray,
   options: PublishOptions,
 ) -> Result(Nil, WrenError) {
   publish_with_options(
@@ -922,7 +968,7 @@ pub fn publish_for_kind(
   channel: Channel,
   routing: KindRouting,
   kind: String,
-  payload: String,
+  payload: BitArray,
   options: PublishOptions,
 ) -> Result(Nil, WrenError) {
   publish_with_options(
@@ -969,9 +1015,9 @@ fn apply_kind_routing(
   }
 }
 
-/// Fetch a single message from a queue (polls briefly). A primitive for
-/// one-off fetches; prefer `start_consumer` for ongoing work.
-pub fn get(channel: Channel, queue: String) -> Result(String, WrenError) {
+/// Fetch a single message's raw bytes from a queue (polls briefly). A primitive
+/// for one-off fetches; prefer `start_consumer` for ongoing work.
+pub fn get(channel: Channel, queue: String) -> Result(BitArray, WrenError) {
   ffi_get(channel, queue)
   |> result.map_error(ChannelFailed)
 }
@@ -1298,7 +1344,7 @@ type State {
 type Event {
   Delivery(
     tag: Int,
-    payload: String,
+    payload: BitArray,
     routing_key: String,
     headers: List(#(String, String)),
     correlation_id: Option(String),
@@ -2100,6 +2146,12 @@ fn ffi_declare_queue_full(
   arguments: List(#(String, Arg)),
 ) -> Result(Nil, String)
 
+@external(erlang, "wren_ffi", "declare_queue_passive")
+fn ffi_declare_queue_passive(
+  channel: Channel,
+  name: String,
+) -> Result(Nil, String)
+
 @external(erlang, "wren_ffi", "declare_exchange")
 fn ffi_declare_exchange(
   channel: Channel,
@@ -2143,20 +2195,12 @@ fn ffi_delete_exchange_full(
   if_unused: Bool,
 ) -> Result(Nil, String)
 
-@external(erlang, "wren_ffi", "publish")
-fn ffi_publish(
-  channel: Channel,
-  exchange: String,
-  routing_key: String,
-  payload: String,
-) -> Result(Nil, String)
-
 @external(erlang, "wren_ffi", "publish_full")
 fn ffi_publish_full(
   channel: Channel,
   exchange: String,
   routing_key: String,
-  payload: String,
+  payload: BitArray,
   headers: List(#(String, String)),
   priority: Option(Int),
   expiration: Option(Int),
@@ -2179,7 +2223,7 @@ fn ffi_wait_for_confirms(
 fn ffi_purge_queue(channel: Channel, name: String) -> Result(Nil, String)
 
 @external(erlang, "wren_ffi", "get")
-fn ffi_get(channel: Channel, queue: String) -> Result(String, String)
+fn ffi_get(channel: Channel, queue: String) -> Result(BitArray, String)
 
 @external(erlang, "wren_ffi", "subscribe")
 fn ffi_subscribe(

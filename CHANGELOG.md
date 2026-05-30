@@ -4,6 +4,29 @@ All notable changes to wren are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] — 2026-05-30
+
+The first stable release. wren now has **feature parity** with the production
+`bunnyhop` crate across every meaningful capability; the public API is considered
+stable.
+
+### Added
+
+- **Raw byte payloads** — payloads are now `BitArray` throughout (`Message.payload`,
+  `publish`, `publish_with_options`, `get`, batch, codecs), so arbitrary binary
+  (protobuf, msgpack, …) works. `publish_text` / `message_text` and
+  `codec.string` / `codec.bytes` keep the text case ergonomic.
+- **Passive declare** — `declare_queue_passive` checks a queue exists without
+  creating it.
+- **Config validation** — `validate_config` (non-empty host, valid port).
+
+### Changed (breaking)
+
+- Payloads moved from `String` to `BitArray`. Replace `publish(..., payload: "x")`
+  with `publish_text(..., text: "x")` (or `payload: <<"x">>`), and read text
+  deliveries with `message_text(message)`. Codecs now encode to / decode from
+  `BitArray`.
+
 ## [0.2.2] — 2026-05-30
 
 ### Added
@@ -87,6 +110,7 @@ The first cut: a complete, type-safe AMQP messaging core on the BEAM.
   an `on_connect` hook.
 - **Examples** — runnable `wren/examples/{router,retry,recovery}` and `wren/demo`.
 
+[1.0.0]: https://github.com/cargopete/wren/releases/tag/v1.0.0
 [0.2.2]: https://github.com/cargopete/wren/releases/tag/v0.2.2
 [0.2.1]: https://github.com/cargopete/wren/releases/tag/v0.2.1
 [0.2.0]: https://github.com/cargopete/wren/releases/tag/v0.2.0

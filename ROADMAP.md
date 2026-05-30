@@ -294,16 +294,24 @@ _Parity target:_ `producer.rs::{MultiQueueProducer, TargetProducer}`.
 
 ---
 
+## Milestone 21 — Raw byte payloads ✅ (the last real gap)
+
+- [x] Payloads are `BitArray` throughout (`Message.payload`, `publish`,
+  `publish_with_options`, `get`, batch, codecs) — arbitrary binary now works
+- [x] Ergonomic text conveniences: `publish_text`, `message_text`, `codec.string` / `codec.bytes`
+
+_Parity target:_ `producer.rs::produce_raw`.
+
+## Milestone 22 — Completeness: passive declare + validation ✅
+
+- [x] `declare_queue_passive` — check a queue exists without creating it
+- [x] `validate_config` — non-empty host, valid port (after the lenient `config_from_env`)
+
 ## Known remaining gaps (post-audit)
 
-An exhaustive diff of bunnyhop's public surface leaves these — all niche or
-intentionally deferred. The one a user might actually hit is raw-byte payloads.
+All niche or intentionally deferred — none is a missing capability.
 
-- **Raw byte (`BitArray`) payloads** — wren is `String`-only (fine for UTF-8/JSON,
-  not for arbitrary binary like protobuf/msgpack). The honest "real" gap.
-- **Passive declare** (`attach_to_queue`) — check a queue exists without creating it.
 - **Polling-loop consumer** (`start_consuming_with_polling`) — wren has push consumers + `get`.
-- **Config validation** (`validate`) — wren's `config_from_lookup` is lenient.
 - **Pool idle/stale-channel reaping** — deferred (see M12).
 - **`next_publish_seqno`** — confirm sequence numbers (niche).
 - **`key()` / `make_span`** — a partition-key abstraction and Rust `tracing`

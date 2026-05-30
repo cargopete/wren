@@ -1,5 +1,5 @@
 name = "wren"
-version = "0.2.2"
+version = "1.0.0"
 
 description = "An ergonomic RabbitMQ / AMQP messaging library for Gleam, built on the BEAM and OTP."
 licences = ["MIT"]

@@ -10,8 +10,9 @@ built on the BEAM and OTP.
 
 ## Status
 
-**The core is in place** and exercised by an integration suite against a real
-broker. Pre-1.0, so the API may still shift, but the feature set is whole:
+**Stable — `1.0`.** The public API is settled and the whole feature set is
+exercised by an integration suite against a real broker (green in CI, which
+stands up its own RabbitMQ):
 
 - ✅ Typed connections & channels over the Erlang `amqp_client`
 - ✅ A supervised, actor-based consumer (OTP restarts and re-subscribes on crash)
@@ -32,13 +33,14 @@ And, since v0.2:
 - ✅ Active `health_check`, kind-based producer (`publish_for_kind`), TLS, and topology guards
 - ✅ Consumer subscribe options — auto-ack, exclusive, no-local, consumer tag, subscription arguments
 - ✅ Full AMQP message properties (`correlation_id`/`reply_to` for RPC, …) and batch / multi-target publishing
+- ✅ Raw byte (`BitArray`) payloads, with `publish_text` / `message_text` for the text case
 
-wren covers the **entire core and the vast majority** of the production `bunnyhop`
-crate's surface. A few bunnyhop features are expressed differently by deliberate,
-idiomatic-Gleam choice — no axum-style extractors, dependency injection, or derive
-macros; handlers take an explicit `Message` and codecs are values. A handful of
-genuinely minor gaps remain (raw-byte payloads, passive declare, a polling
-consumer); see the roadmap's "Known remaining gaps" for the honest list.
+wren has **feature parity** with the production `bunnyhop` crate across every
+meaningful capability. A few bunnyhop features are expressed differently by
+deliberate, idiomatic-Gleam choice — no axum-style extractors, dependency
+injection, or derive macros; handlers take an explicit `Message` and codecs are
+values. Only a handful of genuinely niche refinements are left out (a polling
+consumer, pool stale-channel reaping); see the roadmap's "Known remaining gaps".
 
 See [`ROADMAP.md`](./ROADMAP.md) for how each piece maps to a production AMQP
 client, and [`CHANGELOG.md`](./CHANGELOG.md) for what landed when.

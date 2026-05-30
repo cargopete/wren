@@ -25,7 +25,7 @@ pub fn main() -> Nil {
       |> wren.on_connect(fn(_connection) { io.println("🔌 (re)connected") })
 
     let handler = fn(message: wren.Message) -> wren.Confirmation {
-      io.println("📥 " <> message.payload)
+      io.println("📥 " <> result.unwrap(wren.message_text(message), "<binary>"))
       wren.Ack
     }
     use consumer <- result.try(wren.start_recoverable_consumer(
@@ -35,11 +35,11 @@ pub fn main() -> Nil {
       options,
     ))
 
-    use _ <- result.try(wren.publish(
+    use _ <- result.try(wren.publish_text(
       channel,
       exchange: "",
       routing_key: "events",
-      payload: "hello from a resilient consumer",
+      text: "hello from a resilient consumer",
     ))
 
     process.sleep(500)

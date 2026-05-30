@@ -43,11 +43,11 @@ pub fn main() -> Nil {
       infra,
     ))
 
-    use _ <- result.try(wren.publish(
+    use _ <- result.try(wren.publish_text(
       channel,
       exchange: "",
       routing_key: infra.main_queue,
-      payload: "do the thing",
+      text: "do the thing",
     ))
 
     // Long enough for the failure, the delay, and the successful retry.

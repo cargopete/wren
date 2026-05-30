@@ -18,9 +18,8 @@ pub fn main() -> Nil {
     use _ <- result.try(wren.declare_queue(channel, "wren_demo"))
 
     let handler = fn(message: wren.Message) -> wren.Confirmation {
-      io.println(
-        "📨 received on '" <> message.routing_key <> "': " <> message.payload,
-      )
+      let text = result.unwrap(wren.message_text(message), "<binary>")
+      io.println("📨 received on '" <> message.routing_key <> "': " <> text)
       wren.Ack
     }
     use consumer <- result.try(wren.start_consumer(
@@ -29,17 +28,17 @@ pub fn main() -> Nil {
       handler,
     ))
 
-    use _ <- result.try(wren.publish(
+    use _ <- result.try(wren.publish_text(
       channel,
       exchange: "",
       routing_key: "wren_demo",
-      payload: "first message",
+      text: "first message",
     ))
-    use _ <- result.try(wren.publish(
+    use _ <- result.try(wren.publish_text(
       channel,
       exchange: "",
       routing_key: "wren_demo",
-      payload: "second message",
+      text: "second message",
     ))
 
     // Give the supervised consumer a moment to process before tearing down.

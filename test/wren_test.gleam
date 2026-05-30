@@ -63,15 +63,12 @@ pub fn publish_and_get_round_trip_test() {
   fresh_queue(channel, "wren_test_get")
 
   let assert Ok(_) =
-    wren.publish(
-      channel,
-      exchange: "",
-      routing_key: "wren_test_get",
-      payload: "hello wren",
-    )
+    wren.publish(channel, exchange: "", routing_key: "wren_test_get", payload: <<
+      "hello wren",
+    >>)
 
   let assert Ok(payload) = wren.get(channel, "wren_test_get")
-  assert payload == "hello wren"
+  assert payload == <<"hello wren">>
 
   wren.close_connection(connection)
 }
@@ -85,7 +82,7 @@ pub fn purge_clears_pending_messages_test() {
       channel,
       exchange: "",
       routing_key: "wren_test_purge",
-      payload: "doomed",
+      payload: <<"doomed">>,
     )
   let assert Ok(_) = wren.purge_queue(channel, "wren_test_purge")
 
@@ -106,10 +103,10 @@ pub fn publish_with_options_uses_default_exchange_test() {
     |> wren.with_content_type("text/plain")
 
   let assert Ok(_) =
-    wren.publish_with_options(channel, "optioned payload", options)
+    wren.publish_with_options(channel, <<"optioned payload">>, options)
 
   let assert Ok(payload) = wren.get(channel, "wren_test_opts")
-  assert payload == "optioned payload"
+  assert payload == <<"optioned payload">>
 
   wren.close_connection(connection)
 }
@@ -139,10 +136,10 @@ pub fn supervised_consumer_receives_delivery_test() {
     |> wren.with_header("kind", "greeting")
     |> wren.with_header("trace-id", "abc-123")
 
-  let assert Ok(_) = wren.publish_with_options(channel, "ahoy", options)
+  let assert Ok(_) = wren.publish_with_options(channel, <<"ahoy">>, options)
 
   let assert Ok(received) = process.receive(from: inbox, within: 5000)
-  assert received.payload == "ahoy"
+  assert received.payload == <<"ahoy">>
   assert received.routing_key == "wren_test_consume"
   assert list.key_find(received.headers, "kind") == Ok("greeting")
   assert list.key_find(received.headers, "trace-id") == Ok("abc-123")
@@ -209,10 +206,10 @@ pub fn exchange_binding_routes_to_queue_test() {
       channel,
       exchange: "wren_test_ex",
       routing_key: "orders.created",
-      payload: "via topic",
+      payload: <<"via topic">>,
     )
   let assert Ok(payload) = wren.get(channel, "wren_test_bound")
-  assert payload == "via topic"
+  assert payload == <<"via topic">>
 
   let assert Ok(_) = wren.delete_exchange(channel, "wren_test_ex")
   wren.close_connection(connection)
@@ -249,7 +246,7 @@ pub fn unbind_stops_routing_test() {
       channel,
       exchange: "wren_test_unbind_ex",
       routing_key: "k",
-      payload: "orphan",
+      payload: <<"orphan">>,
     )
   assert result.is_error(wren.get(channel, "wren_test_unbind_q"))
 
@@ -268,12 +265,9 @@ pub fn queue_message_ttl_argument_takes_effect_test() {
   let assert Ok(_) = wren.purge_queue(channel, "wren_test_ttl")
 
   let assert Ok(_) =
-    wren.publish(
-      channel,
-      exchange: "",
-      routing_key: "wren_test_ttl",
-      payload: "ephemeral",
-    )
+    wren.publish(channel, exchange: "", routing_key: "wren_test_ttl", payload: <<
+      "ephemeral",
+    >>)
   // Outlive the TTL, then confirm the broker discarded it.
   process.sleep(400)
   assert result.is_error(wren.get(channel, "wren_test_ttl"))
@@ -359,7 +353,7 @@ pub fn router_dispatches_by_kind_test() {
   let assert Ok(_) =
     wren.publish_with_options(
       channel,
-      "{}",
+      <<"{}">>,
       wren.publish_options()
         |> wren.route("wren_test_router")
         |> wren.with_kind("mystery.kind"),
@@ -399,7 +393,7 @@ pub fn router_rejects_undecodable_without_crashing_test() {
     wren.publish_options()
     |> wren.route("wren_test_router_bad")
     |> wren.with_kind("order.created")
-  let assert Ok(_) = wren.publish_with_options(channel, "not json", bad)
+  let assert Ok(_) = wren.publish_with_options(channel, <<"not json">>, bad)
 
   let good = Order(id: "o-2", qty: 9)
   let assert Ok(_) =
@@ -509,12 +503,9 @@ pub fn retry_round_trips_through_delay_queue_test() {
     wren.start_consumer_with_retry(channel, handler, infra)
 
   let assert Ok(_) =
-    wren.publish(
-      channel,
-      exchange: "",
-      routing_key: infra.main_queue,
-      payload: "retry me",
-    )
+    wren.publish(channel, exchange: "", routing_key: infra.main_queue, payload: <<
+      "retry me",
+    >>)
 
   // First delivery: no retry count yet.
   let assert Ok(first) = process.receive(from: inbox, within: 5000)
@@ -522,7 +513,7 @@ pub fn retry_round_trips_through_delay_queue_test() {
   // Second delivery arrives after the TTL, now stamped as attempt 1.
   let assert Ok(second) = process.receive(from: inbox, within: 8000)
   assert list.key_find(second.headers, "x-retry-count") == Ok("1")
-  assert second.payload == "retry me"
+  assert second.payload == <<"retry me">>
 
   wren.stop(consumer)
   teardown_fixed(channel, infra)
@@ -542,16 +533,13 @@ pub fn exhausted_retry_routes_to_dlq_test() {
     wren.start_consumer_with_retry(channel, handler, infra)
 
   let assert Ok(_) =
-    wren.publish(
-      channel,
-      exchange: "",
-      routing_key: infra.main_queue,
-      payload: "doomed",
-    )
+    wren.publish(channel, exchange: "", routing_key: infra.main_queue, payload: <<
+      "doomed",
+    >>)
 
   // It should land in the DLQ rather than bounce around forever.
   let assert Ok(payload) = wren.get(channel, infra.dlq)
-  assert payload == "doomed"
+  assert payload == <<"doomed">>
 
   wren.stop(consumer)
   teardown_fixed(channel, infra)
@@ -572,15 +560,12 @@ pub fn dead_letter_confirmation_routes_to_dlq_test() {
     wren.start_consumer_with_retry(channel, handler, infra)
 
   let assert Ok(_) =
-    wren.publish(
-      channel,
-      exchange: "",
-      routing_key: infra.main_queue,
-      payload: "straight to jail",
-    )
+    wren.publish(channel, exchange: "", routing_key: infra.main_queue, payload: <<
+      "straight to jail",
+    >>)
 
   let assert Ok(payload) = wren.get(channel, infra.dlq)
-  assert payload == "straight to jail"
+  assert payload == <<"straight to jail">>
 
   wren.stop(consumer)
   teardown_fixed(channel, infra)
@@ -659,10 +644,10 @@ pub fn recoverable_consumer_receives_delivery_test() {
       channel,
       exchange: "",
       routing_key: "wren_test_recover",
-      payload: "alive",
+      payload: <<"alive">>,
     )
   let assert Ok(received) = process.receive(from: inbox, within: 5000)
-  assert received.payload == "alive"
+  assert received.payload == <<"alive">>
 
   wren.stop(consumer)
   wren.close_connection(connection)
@@ -706,10 +691,10 @@ pub fn recoverable_consumer_heals_after_connection_drop_test() {
       channel,
       exchange: "",
       routing_key: "wren_test_recover_drop",
-      payload: "after-reconnect",
+      payload: <<"after-reconnect">>,
     )
   let assert Ok(received) = process.receive(from: inbox, within: 5000)
-  assert received.payload == "after-reconnect"
+  assert received.payload == <<"after-reconnect">>
 
   wren.stop(consumer)
   wren.close_connection(connection)
@@ -729,10 +714,10 @@ pub fn client_opens_channel_and_publishes_test() {
       channel,
       exchange: "",
       routing_key: "wren_test_client",
-      payload: "via client",
+      payload: <<"via client">>,
     )
   let assert Ok(payload) = wren.get(channel, "wren_test_client")
-  assert payload == "via client"
+  assert payload == <<"via client">>
   assert wren.is_open(wren.client_connection(client)) == True
 
   wren.close_client(client)
@@ -752,10 +737,10 @@ pub fn publish_confirmed_succeeds_test() {
     |> wren.route("wren_test_confirm")
     |> wren.with_persistence()
   let assert Ok(_) =
-    wren.publish_confirmed(channel, "confirmed payload", options, 5000)
+    wren.publish_confirmed(channel, <<"confirmed payload">>, options, 5000)
 
   let assert Ok(payload) = wren.get(channel, "wren_test_confirm")
-  assert payload == "confirmed payload"
+  assert payload == <<"confirmed payload">>
 
   wren.close_connection(connection)
 }
@@ -770,7 +755,7 @@ pub fn publish_confirmed_without_enabling_is_an_error_test() {
     wren.publish_options()
     |> wren.route("wren_test_confirm_off")
   // Waiting for confirms on a non-confirm channel is an error, not a hang.
-  assert result.is_error(wren.publish_confirmed(channel, "x", options, 1000))
+  assert result.is_error(wren.publish_confirmed(channel, <<"x">>, options, 1000))
 
   wren.close_connection(connection)
 }
@@ -793,11 +778,11 @@ pub fn concurrent_consumer_runs_each_delivery_in_its_own_process_test() {
     wren.start_consumer_concurrent(channel, "wren_test_concurrent", handler, 5)
 
   let publish = fn(body) {
-    wren.publish(
+    wren.publish_text(
       channel,
       exchange: "",
       routing_key: "wren_test_concurrent",
-      payload: body,
+      text: body,
     )
   }
   let assert Ok(_) = publish("1")
@@ -831,11 +816,11 @@ pub fn serial_consumer_runs_deliveries_in_one_process_test() {
     wren.start_consumer(channel, "wren_test_serial", handler)
 
   let publish = fn(body) {
-    wren.publish(
+    wren.publish_text(
       channel,
       exchange: "",
       routing_key: "wren_test_serial",
-      payload: body,
+      text: body,
     )
   }
   let assert Ok(_) = publish("1")
@@ -862,14 +847,11 @@ pub fn connection_pool_hands_out_working_channels_test() {
   let assert Ok(_) = wren.declare_queue(channel, "wren_test_pool")
   let assert Ok(_) = wren.purge_queue(channel, "wren_test_pool")
   let assert Ok(_) =
-    wren.publish(
-      channel,
-      exchange: "",
-      routing_key: "wren_test_pool",
-      payload: "pooled",
-    )
+    wren.publish(channel, exchange: "", routing_key: "wren_test_pool", payload: <<
+      "pooled",
+    >>)
   let assert Ok(payload) = wren.get(channel, "wren_test_pool")
-  assert payload == "pooled"
+  assert payload == <<"pooled">>
   wren.close_channel(channel)
 
   // A second checkout (round-robined to the other connection) works too.
@@ -942,11 +924,11 @@ pub fn publish_for_kind_routes_via_mapped_exchange_test() {
       channel,
       routing,
       "order.created",
-      "routed by kind",
+      <<"routed by kind">>,
       wren.publish_options(),
     )
   let assert Ok(payload) = wren.get(channel, "wren_test_kind_q")
-  assert payload == "routed by kind"
+  assert payload == <<"routed by kind">>
 
   let assert Ok(_) = wren.delete_exchange(channel, "wren_test_kind_ex")
   wren.close_connection(connection)
@@ -963,11 +945,11 @@ pub fn publish_for_kind_falls_back_to_default_exchange_test() {
       channel,
       routing,
       "wren_test_kind_fallback",
-      "unmapped",
+      <<"unmapped">>,
       wren.publish_options(),
     )
   let assert Ok(payload) = wren.get(channel, "wren_test_kind_fallback")
-  assert payload == "unmapped"
+  assert payload == <<"unmapped">>
 
   wren.close_connection(connection)
 }
@@ -1019,7 +1001,7 @@ pub fn delete_queue_if_empty_guard_test() {
       channel2,
       exchange: "",
       routing_key: "wren_test_if_empty_no",
-      payload: "blocker",
+      payload: <<"blocker">>,
     )
   assert result.is_error(wren.delete_queue_with(
     channel2,
@@ -1062,10 +1044,11 @@ pub fn headers_exchange_binding_arguments_route_test() {
     wren.publish_options()
     |> wren.to_exchange("wren_test_headers_ex")
     |> wren.with_header("department", "sales")
-  let assert Ok(_) = wren.publish_with_options(channel, "for sales", options)
+  let assert Ok(_) =
+    wren.publish_with_options(channel, <<"for sales">>, options)
 
   let assert Ok(payload) = wren.get(channel, "wren_test_headers_q")
-  assert payload == "for sales"
+  assert payload == <<"for sales">>
 
   let assert Ok(_) = wren.delete_exchange(channel, "wren_test_headers_ex")
   wren.close_connection(connection)
@@ -1099,10 +1082,10 @@ pub fn auto_ack_consumer_receives_delivery_test() {
       channel,
       exchange: "",
       routing_key: "wren_test_autoack",
-      payload: "auto",
+      payload: <<"auto">>,
     )
   let assert Ok(received) = process.receive(from: inbox, within: 5000)
-  assert received.payload == "auto"
+  assert received.payload == <<"auto">>
 
   wren.stop(consumer)
   wren.close_connection(connection)
@@ -1136,10 +1119,10 @@ pub fn consumer_with_tag_and_arguments_subscribes_test() {
       channel,
       exchange: "",
       routing_key: "wren_test_consopts",
-      payload: "tagged",
+      payload: <<"tagged">>,
     )
   let assert Ok(received) = process.receive(from: inbox, within: 5000)
-  assert received.payload == "tagged"
+  assert received.payload == <<"tagged">>
 
   wren.stop(consumer)
   wren.close_connection(connection)
@@ -1167,7 +1150,7 @@ pub fn message_properties_round_trip_test() {
     |> wren.route("wren_test_props")
     |> wren.with_correlation_id("corr-1")
     |> wren.with_reply_to("reply-queue")
-  let assert Ok(_) = wren.publish_with_options(channel, "ping", options)
+  let assert Ok(_) = wren.publish_with_options(channel, <<"ping">>, options)
 
   let assert Ok(received) = process.receive(from: inbox, within: 5000)
   assert received.correlation_id == option.Some("corr-1")
@@ -1183,17 +1166,17 @@ pub fn publish_batch_delivers_to_each_target_test() {
   fresh_queue(channel, "wren_test_batch_b")
 
   let messages = [
-    #(wren.queue_target("wren_test_batch_a"), "to-a"),
-    #(wren.queue_target("wren_test_batch_b"), "to-b"),
+    #(wren.queue_target("wren_test_batch_a"), <<"to-a">>),
+    #(wren.queue_target("wren_test_batch_b"), <<"to-b">>),
   ]
   let result = wren.publish_batch(channel, messages, wren.publish_options())
   assert result.published == 2
   assert result.failures == []
 
   let assert Ok(a) = wren.get(channel, "wren_test_batch_a")
-  assert a == "to-a"
+  assert a == <<"to-a">>
   let assert Ok(b) = wren.get(channel, "wren_test_batch_b")
-  assert b == "to-b"
+  assert b == <<"to-b">>
 
   wren.close_connection(connection)
 }
@@ -1210,16 +1193,16 @@ pub fn publish_to_targets_fans_out_one_message_test() {
   let result =
     wren.publish_to_targets(
       channel,
-      "broadcast",
+      <<"broadcast">>,
       targets,
       wren.publish_options(),
     )
   assert result.published == 2
 
   let assert Ok(a) = wren.get(channel, "wren_test_fan_a")
-  assert a == "broadcast"
+  assert a == <<"broadcast">>
   let assert Ok(b) = wren.get(channel, "wren_test_fan_b")
-  assert b == "broadcast"
+  assert b == <<"broadcast">>
 
   wren.close_connection(connection)
 }
@@ -1229,8 +1212,8 @@ pub fn publish_batch_with_retry_succeeds_test() {
   fresh_queue(channel, "wren_test_batch_retry")
 
   let messages = [
-    #(wren.queue_target("wren_test_batch_retry"), "m1"),
-    #(wren.queue_target("wren_test_batch_retry"), "m2"),
+    #(wren.queue_target("wren_test_batch_retry"), <<"m1">>),
+    #(wren.queue_target("wren_test_batch_retry"), <<"m2">>),
   ]
   let result =
     wren.publish_batch_with_retry(channel, messages, wren.publish_options(), 3)
@@ -1238,4 +1221,69 @@ pub fn publish_batch_with_retry_succeeds_test() {
   assert result.failures == []
 
   wren.close_connection(connection)
+}
+
+// ---------------------------------------------------------------------------
+// Raw byte payloads (M21)
+// ---------------------------------------------------------------------------
+
+pub fn raw_byte_payload_round_trips_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_bytes")
+
+  let inbox = process.new_subject()
+  let handler = fn(message: wren.Message) -> wren.Confirmation {
+    process.send(inbox, message)
+    wren.Ack
+  }
+  let assert Ok(consumer) =
+    wren.start_consumer(channel, "wren_test_bytes", handler)
+
+  // Arbitrary non-UTF-8 bytes — the whole point of byte payloads.
+  let payload = <<0, 159, 146, 150, 255>>
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_test_bytes",
+      payload: payload,
+    )
+
+  let assert Ok(received) = process.receive(from: inbox, within: 5000)
+  assert received.payload == payload
+  // It isn't valid UTF-8, so the text view correctly refuses it.
+  assert result.is_error(wren.message_text(received))
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}
+
+// ---------------------------------------------------------------------------
+// Passive declare + config validation (M22)
+// ---------------------------------------------------------------------------
+
+pub fn passive_declare_detects_existence_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_passive")
+  // It exists, so passive declare succeeds.
+  let assert Ok(_) = wren.declare_queue_passive(channel, "wren_test_passive")
+  wren.close_connection(connection)
+
+  // A missing queue fails (and closes the channel, hence a fresh connection).
+  let #(conn2, channel2) = open()
+  assert result.is_error(wren.declare_queue_passive(
+    channel2,
+    "wren_test_does_not_exist_42",
+  ))
+  wren.close_connection(conn2)
+}
+
+pub fn validate_config_test() {
+  assert wren.validate_config(test_config()) == Ok(Nil)
+  assert result.is_error(wren.validate_config(
+    wren.Config(..test_config(), host: ""),
+  ))
+  assert result.is_error(wren.validate_config(
+    wren.Config(..test_config(), port: 0),
+  ))
 }

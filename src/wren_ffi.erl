@@ -5,13 +5,13 @@
     getenv/1,
     open_channel/1,
     declare_queue_full/6,
+    declare_queue_passive/2,
     declare_exchange/7,
     bind_queue_full/5,
     unbind_queue/4,
     delete_queue_full/4,
     delete_exchange_full/3,
     purge_queue/2,
-    publish/4,
     publish_full/11,
     enable_confirms/1,
     wait_for_confirms/2,
@@ -94,6 +94,16 @@ declare_queue_full(Channel, Queue, Durable, Exclusive, AutoDelete, Arguments) ->
         Class:Reason -> {error, fmt({Class, Reason})}
     end.
 
+%% Passive declare: succeed only if the queue already exists (no creation).
+declare_queue_passive(Channel, Queue) ->
+    Declare = #'queue.declare'{queue = Queue, passive = true},
+    try amqp_channel:call(Channel, Declare) of
+        #'queue.declare_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
 declare_exchange(Channel, Exchange, Type, Durable, AutoDelete, Internal, Arguments) ->
     Declare = #'exchange.declare'{
         exchange = Exchange,
@@ -163,15 +173,6 @@ to_amqp_arg(Key, {bool_arg, Value}) -> {Key, bool, Value}.
 purge_queue(Channel, Queue) ->
     try amqp_channel:call(Channel, #'queue.purge'{queue = Queue}) of
         #'queue.purge_ok'{} -> {ok, nil};
-        Other -> {error, fmt(Other)}
-    catch
-        Class:Reason -> {error, fmt({Class, Reason})}
-    end.
-
-publish(Channel, Exchange, RoutingKey, Payload) ->
-    Publish = #'basic.publish'{exchange = Exchange, routing_key = RoutingKey},
-    try amqp_channel:cast(Channel, Publish, #amqp_msg{payload = Payload}) of
-        ok -> {ok, nil};
         Other -> {error, fmt(Other)}
     catch
         Class:Reason -> {error, fmt({Class, Reason})}

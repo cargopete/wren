@@ -51,7 +51,10 @@ pub fn main() -> Nil {
         wren.Ack
       })
       |> wren.fallback(fn(message: wren.Message) {
-        io.println("🤷 unrouted: " <> message.payload)
+        io.println(
+          "🤷 unrouted: "
+          <> result.unwrap(wren.message_text(message), "<binary>"),
+        )
         wren.Reject
       })
     use consumer <- result.try(wren.start_router(channel, "orders", router))
