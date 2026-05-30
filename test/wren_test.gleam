@@ -614,3 +614,102 @@ pub fn setup_retry_is_idempotent_for_exponential_test() {
   let _ = wren.delete_exchange(channel, infra.dlx_exchange)
   wren.close_connection(connection)
 }
+
+// ---------------------------------------------------------------------------
+// QoS, health, and connection recovery
+// ---------------------------------------------------------------------------
+
+pub fn qos_sets_prefetch_test() {
+  let #(connection, channel) = open()
+  let assert Ok(_) = wren.qos(channel, 10)
+  let assert Ok(_) = wren.qos_with(channel, 5, 0, True)
+  wren.close_connection(connection)
+}
+
+pub fn is_open_reflects_connection_state_test() {
+  let assert Ok(connection) = wren.connect(test_config())
+  assert wren.is_open(connection) == True
+
+  wren.close_connection(connection)
+  // Closing is asynchronous; give the connection process a moment to exit.
+  process.sleep(300)
+  assert wren.is_open(connection) == False
+}
+
+pub fn recoverable_consumer_receives_delivery_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_recover")
+
+  let inbox = process.new_subject()
+  let handler = fn(message: wren.Message) -> wren.Confirmation {
+    process.send(inbox, message)
+    wren.Ack
+  }
+  let assert Ok(consumer) =
+    wren.start_recoverable_consumer(
+      test_config(),
+      "wren_test_recover",
+      handler,
+      wren.recoverable_options(),
+    )
+
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_test_recover",
+      payload: "alive",
+    )
+  let assert Ok(received) = process.receive(from: inbox, within: 5000)
+  assert received.payload == "alive"
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}
+
+pub fn recoverable_consumer_heals_after_connection_drop_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_recover_drop")
+
+  // `on_connect` reports every (re)connection, so the test can drop the first
+  // one and watch the consumer re-establish a second.
+  let connects = process.new_subject()
+  let inbox = process.new_subject()
+  let options =
+    wren.recoverable_options()
+    |> wren.on_connect(fn(conn) { process.send(connects, conn) })
+    |> wren.with_backoff(200, 2000)
+  let handler = fn(message: wren.Message) -> wren.Confirmation {
+    process.send(inbox, message)
+    wren.Ack
+  }
+  let assert Ok(consumer) =
+    wren.start_recoverable_consumer(
+      test_config(),
+      "wren_test_recover_drop",
+      handler,
+      options,
+    )
+
+  // First connection up; simulate a drop by closing it from the outside.
+  let assert Ok(first_connection) =
+    process.receive(from: connects, within: 5000)
+  wren.close_connection(first_connection)
+
+  // The consumer should reconnect on its own, reporting a fresh connection.
+  let assert Ok(_second) = process.receive(from: connects, within: 8000)
+
+  // And it should be consuming again on the re-established subscription.
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_test_recover_drop",
+      payload: "after-reconnect",
+    )
+  let assert Ok(received) = process.receive(from: inbox, within: 5000)
+  assert received.payload == "after-reconnect"
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}

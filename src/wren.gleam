@@ -166,6 +166,30 @@ pub fn open_channel(connection: Connection) -> Result(Channel, WrenError) {
   |> result.map_error(ChannelFailed)
 }
 
+/// Is the connection still alive? A cheap health check.
+pub fn is_open(connection: Connection) -> Bool {
+  ffi_is_connection_open(connection)
+}
+
+/// Set channel prefetch: the number of unacknowledged messages the broker will
+/// deliver before waiting for acks. Apply this before starting a consumer to
+/// bound in-flight work.
+pub fn qos(channel: Channel, prefetch_count: Int) -> Result(Nil, WrenError) {
+  qos_with(channel, prefetch_count, 0, False)
+}
+
+/// Set channel prefetch with full control over `prefetch_size` (octets, `0` for
+/// no limit) and whether the setting is `global` (channel-wide vs per-consumer).
+pub fn qos_with(
+  channel: Channel,
+  prefetch_count: Int,
+  prefetch_size: Int,
+  global: Bool,
+) -> Result(Nil, WrenError) {
+  ffi_set_qos(channel, prefetch_count, prefetch_size, global)
+  |> result.map_error(ChannelFailed)
+}
+
 /// Declare a durable queue with default options (idempotent).
 pub fn declare_queue(channel: Channel, name: String) -> Result(Nil, WrenError) {
   declare_queue_with(channel, name, queue_options())
@@ -591,6 +615,8 @@ type Event {
     headers: List(#(String, String)),
   )
   Cancelled
+  /// A monitored connection died (only seen by recoverable consumers).
+  ConnectionDown
   Ignored
 }
 
@@ -626,14 +652,7 @@ fn start_consumer_internal(
   handler: fn(Message) -> Confirmation,
   retry: Option(RetryInfrastructure),
 ) -> Result(Consumer, WrenError) {
-  let builder = consumer_builder(channel, queue, handler, retry)
-  let child = supervision.worker(fn() { actor.start(builder) })
-
-  static_supervisor.new(static_supervisor.OneForOne)
-  |> static_supervisor.add(child)
-  |> static_supervisor.start
-  |> result.map(fn(started) { Consumer(started.pid) })
-  |> result.replace_error(ChannelFailed("failed to start consumer supervisor"))
+  start_supervised(consumer_builder(channel, queue, handler, retry))
 }
 
 /// Stop a running consumer and its supervisor.
@@ -674,11 +693,13 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
     Delivery(tag, payload, routing_key, headers) -> {
       let message = Message(payload:, routing_key:, headers:)
       let confirmation = state.handler(message)
-      settle(state, message, tag, confirmation)
+      settle(state.channel, state.retry, message, tag, confirmation)
       actor.continue(state)
     }
     // Broker cancelled us: stop so the supervisor restarts and re-subscribes.
     Cancelled -> actor.stop()
+    // A plain consumer doesn't monitor a connection, so this shouldn't arrive.
+    ConnectionDown -> actor.continue(state)
     Ignored -> actor.continue(state)
   }
 }
@@ -687,26 +708,32 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
 /// settle directly with the broker; `Retry`/`DeadLetter` route through the
 /// retry infrastructure when one is configured.
 fn settle(
-  state: State,
+  channel: Channel,
+  retry_infra: Option(RetryInfrastructure),
   message: Message,
   tag: Int,
   confirmation: Confirmation,
 ) -> Nil {
   case confirmation {
-    Ack -> ffi_settle(state.channel, tag, Ack)
-    Reject -> ffi_settle(state.channel, tag, Reject)
-    Retry -> settle_retry(state, message, tag)
-    DeadLetter -> settle_dead_letter(state, message, tag)
+    Ack -> ffi_settle(channel, tag, Ack)
+    Reject -> ffi_settle(channel, tag, Reject)
+    Retry -> settle_retry(channel, retry_infra, message, tag)
+    DeadLetter -> settle_dead_letter(channel, retry_infra, message, tag)
   }
 }
 
-fn settle_retry(state: State, message: Message, tag: Int) -> Nil {
-  case state.retry {
+fn settle_retry(
+  channel: Channel,
+  retry_infra: Option(RetryInfrastructure),
+  message: Message,
+  tag: Int,
+) -> Nil {
+  case retry_infra {
     None -> {
       log_warning(
         "wren: Retry requested but no retry infrastructure configured; rejecting",
       )
-      ffi_settle(state.channel, tag, Reject)
+      ffi_settle(channel, tag, Reject)
     }
     Some(infra) -> {
       let metadata =
@@ -721,22 +748,27 @@ fn settle_retry(state: State, message: Message, tag: Int) -> Nil {
           retry_routing_key_for_attempt(infra, metadata.attempt),
         )
       }
-      reroute(state, message, tag, exchange, routing_key, metadata)
+      reroute(channel, message, tag, exchange, routing_key, metadata)
     }
   }
 }
 
-fn settle_dead_letter(state: State, message: Message, tag: Int) -> Nil {
-  case state.retry {
+fn settle_dead_letter(
+  channel: Channel,
+  retry_infra: Option(RetryInfrastructure),
+  message: Message,
+  tag: Int,
+) -> Nil {
+  case retry_infra {
     // No DLQ to route to — reject without requeue (the broker's own DLX, if any).
-    None -> ffi_settle(state.channel, tag, DeadLetter)
+    None -> ffi_settle(channel, tag, DeadLetter)
     Some(infra) -> {
       let metadata =
         retry.from_headers(message.headers, infra.policy.max_attempts)
         |> retry.record_failure("handler returned DeadLetter")
         |> stamp
       reroute(
-        state,
+        channel,
         message,
         tag,
         infra.dlx_exchange,
@@ -750,7 +782,7 @@ fn settle_dead_letter(state: State, message: Message, tag: Int) -> Nil {
 /// Republish `message` (with refreshed retry headers) to `exchange`/`routing_key`,
 /// then ack the original. If the republish fails, reject so we don't lose track.
 fn reroute(
-  state: State,
+  channel: Channel,
   message: Message,
   tag: Int,
   exchange: String,
@@ -763,11 +795,11 @@ fn reroute(
     |> route(routing_key)
     |> with_headers(merge_retry_headers(message.headers, metadata))
 
-  case publish_with_options(state.channel, message.payload, options) {
-    Ok(_) -> ffi_settle(state.channel, tag, Ack)
+  case publish_with_options(channel, message.payload, options) {
+    Ok(_) -> ffi_settle(channel, tag, Ack)
     Error(_) -> {
       log_warning("wren: failed to route message to '" <> exchange <> "'")
-      ffi_settle(state.channel, tag, Reject)
+      ffi_settle(channel, tag, Reject)
     }
   }
 }
@@ -908,6 +940,255 @@ fn warn_and_reject(message: Message) -> Confirmation {
 }
 
 // ===========================================================================
+// Recoverable consumer — owns its connection and self-heals
+// ===========================================================================
+
+/// Tuning for a recoverable consumer. Build with `recoverable_options` and
+/// refine with the `with_*` / `on_connect` helpers.
+pub type RecoverableOptions {
+  RecoverableOptions(
+    prefetch: Option(Int),
+    retry: Option(RetryInfrastructure),
+    on_connect: fn(Connection) -> Nil,
+    initial_backoff_ms: Int,
+    max_backoff_ms: Int,
+  )
+}
+
+/// Default recoverable options: no prefetch, no retry, a no-op connect hook,
+/// and reconnection backoff from 500ms up to 30s.
+pub fn recoverable_options() -> RecoverableOptions {
+  RecoverableOptions(
+    prefetch: None,
+    retry: None,
+    on_connect: fn(_connection) { Nil },
+    initial_backoff_ms: 500,
+    max_backoff_ms: 30_000,
+  )
+}
+
+/// Apply a channel prefetch each time the consumer (re)connects.
+pub fn with_prefetch(
+  options: RecoverableOptions,
+  prefetch_count: Int,
+) -> RecoverableOptions {
+  RecoverableOptions(..options, prefetch: Some(prefetch_count))
+}
+
+/// Back the consumer with retry infrastructure. The consumer subscribes to the
+/// infrastructure's main queue, and the topology is (re)declared on each connect.
+pub fn with_retry_infrastructure(
+  options: RecoverableOptions,
+  infra: RetryInfrastructure,
+) -> RecoverableOptions {
+  RecoverableOptions(..options, retry: Some(infra))
+}
+
+/// Register a hook run every time the consumer (re)establishes its connection —
+/// handy for re-declaring topology, emitting metrics, or logging.
+pub fn on_connect(
+  options: RecoverableOptions,
+  hook: fn(Connection) -> Nil,
+) -> RecoverableOptions {
+  RecoverableOptions(..options, on_connect: hook)
+}
+
+/// Tune the reconnection backoff bounds (milliseconds).
+pub fn with_backoff(
+  options: RecoverableOptions,
+  initial_ms: Int,
+  max_ms: Int,
+) -> RecoverableOptions {
+  RecoverableOptions(
+    ..options,
+    initial_backoff_ms: initial_ms,
+    max_backoff_ms: max_ms,
+  )
+}
+
+type RecoverableState {
+  RecoverableState(
+    config: Config,
+    queue: String,
+    handler: fn(Message) -> Confirmation,
+    options: RecoverableOptions,
+    connection: Connection,
+    channel: Channel,
+  )
+}
+
+/// Start a self-healing consumer that owns its own connection. It monitors the
+/// connection and, if it drops, reconnects with capped exponential backoff,
+/// re-opening the channel and re-subscribing — OTP doing the resilience work
+/// instead of a hand-rolled loop.
+///
+/// When `options` carries retry infrastructure, the consumer subscribes to the
+/// infrastructure's main queue (and `queue` is ignored).
+pub fn start_recoverable_consumer(
+  config: Config,
+  queue: String,
+  handler: fn(Message) -> Confirmation,
+  options: RecoverableOptions,
+) -> Result(Consumer, WrenError) {
+  start_supervised(recoverable_builder(config, queue, handler, options))
+}
+
+/// A recoverable consumer that dispatches deliveries through a `Router`.
+pub fn start_recoverable_router(
+  config: Config,
+  queue: String,
+  router: Router,
+  options: RecoverableOptions,
+) -> Result(Consumer, WrenError) {
+  start_recoverable_consumer(
+    config,
+    queue,
+    fn(message) { dispatch(router, message) },
+    options,
+  )
+}
+
+fn recoverable_builder(
+  config: Config,
+  queue: String,
+  handler: fn(Message) -> Confirmation,
+  options: RecoverableOptions,
+) {
+  actor.new_with_initialiser(10_000, fn(subject) {
+    case establish(config, queue, options) {
+      Ok(#(connection, channel)) -> {
+        let selector =
+          process.new_selector()
+          |> process.select_other(decode_event)
+        actor.initialised(RecoverableState(
+          config:,
+          queue:,
+          handler:,
+          options:,
+          connection:,
+          channel:,
+        ))
+        |> actor.selecting(selector)
+        |> actor.returning(subject)
+        |> Ok
+      }
+      Error(error) -> Error(error_reason(error))
+    }
+  })
+  |> actor.on_message(handle_recoverable_event)
+}
+
+/// Connect, configure the channel, (re)declare retry topology, subscribe, and
+/// monitor the connection so its death wakes the actor. Runs in the actor's own
+/// process, so `process.self()` is the consumer pid.
+fn establish(
+  config: Config,
+  queue: String,
+  options: RecoverableOptions,
+) -> Result(#(Connection, Channel), WrenError) {
+  use connection <- result.try(connect(config))
+  use channel <- result.try(open_channel(connection))
+  use _ <- result.try(case options.prefetch {
+    Some(count) -> qos(channel, count)
+    None -> Ok(Nil)
+  })
+  use _ <- result.try(case options.retry {
+    Some(infra) -> setup_retry(channel, infra)
+    None -> Ok(Nil)
+  })
+  let subscribe_queue = case options.retry {
+    Some(infra) -> infra.main_queue
+    None -> queue
+  }
+  use _ <- result.try(
+    ffi_subscribe(channel, subscribe_queue, process.self())
+    |> result.map_error(ChannelFailed),
+  )
+  let _ = process.monitor(connection_pid(connection))
+  options.on_connect(connection)
+  Ok(#(connection, channel))
+}
+
+fn handle_recoverable_event(
+  state: RecoverableState,
+  event: Event,
+) -> actor.Next(RecoverableState, Event) {
+  case event {
+    Delivery(tag, payload, routing_key, headers) -> {
+      let message = Message(payload:, routing_key:, headers:)
+      let confirmation = state.handler(message)
+      settle(state.channel, state.options.retry, message, tag, confirmation)
+      actor.continue(state)
+    }
+    // The connection died — reconnect (with backoff) and carry on.
+    ConnectionDown -> {
+      log_warning("wren: connection lost; reconnecting…")
+      let #(connection, channel) = reconnect(state)
+      actor.continue(RecoverableState(..state, connection:, channel:))
+    }
+    // Broker cancelled the subscription — try to re-subscribe, else reconnect.
+    Cancelled -> {
+      let subscribe_queue = case state.options.retry {
+        Some(infra) -> infra.main_queue
+        None -> state.queue
+      }
+      case ffi_subscribe(state.channel, subscribe_queue, process.self()) {
+        Ok(_) -> actor.continue(state)
+        Error(_) -> {
+          let #(connection, channel) = reconnect(state)
+          actor.continue(RecoverableState(..state, connection:, channel:))
+        }
+      }
+    }
+    Ignored -> actor.continue(state)
+  }
+}
+
+/// Tear down the old connection (best-effort) and reconnect with backoff.
+fn reconnect(state: RecoverableState) -> #(Connection, Channel) {
+  close_connection(state.connection)
+  reconnect_loop(state, state.options.initial_backoff_ms)
+}
+
+fn reconnect_loop(
+  state: RecoverableState,
+  backoff_ms: Int,
+) -> #(Connection, Channel) {
+  process.sleep(backoff_ms)
+  case establish(state.config, state.queue, state.options) {
+    Ok(pair) -> pair
+    Error(_) -> {
+      let next = int.min(backoff_ms * 2, state.options.max_backoff_ms)
+      log_warning(
+        "wren: reconnect failed; retrying in " <> int.to_string(next) <> "ms",
+      )
+      reconnect_loop(state, next)
+    }
+  }
+}
+
+fn start_supervised(
+  builder: actor.Builder(state, Event, whatever),
+) -> Result(Consumer, WrenError) {
+  let child = supervision.worker(fn() { actor.start(builder) })
+
+  static_supervisor.new(static_supervisor.OneForOne)
+  |> static_supervisor.add(child)
+  |> static_supervisor.start
+  |> result.map(fn(started) { Consumer(started.pid) })
+  |> result.replace_error(ChannelFailed("failed to start consumer supervisor"))
+}
+
+fn error_reason(error: WrenError) -> String {
+  case error {
+    ConnectionFailed(reason) -> reason
+    ChannelFailed(reason) -> reason
+    EncodingFailed(reason) -> reason
+    DecodingFailed(reason) -> reason
+  }
+}
+
+// ===========================================================================
 // FFI bindings into src/wren_ffi.erl (Erlang `amqp_client`).
 // ===========================================================================
 
@@ -998,6 +1279,20 @@ fn ffi_subscribe(
   queue: String,
   pid: Pid,
 ) -> Result(Nil, String)
+
+@external(erlang, "wren_ffi", "set_qos")
+fn ffi_set_qos(
+  channel: Channel,
+  prefetch_count: Int,
+  prefetch_size: Int,
+  global: Bool,
+) -> Result(Nil, String)
+
+@external(erlang, "wren_ffi", "connection_pid")
+fn connection_pid(connection: Connection) -> Pid
+
+@external(erlang, "wren_ffi", "is_connection_open")
+fn ffi_is_connection_open(connection: Connection) -> Bool
 
 @external(erlang, "wren_ffi", "settle")
 fn ffi_settle(channel: Channel, tag: Int, confirmation: Confirmation) -> Nil

@@ -14,8 +14,11 @@
     publish_full/9,
     get/2,
     subscribe/3,
+    set_qos/4,
     settle/3,
     decode_event/1,
+    connection_pid/1,
+    is_connection_open/1,
     log_warning/1,
     now_timestamp/0,
     close_channel/1,
@@ -204,6 +207,28 @@ subscribe(Channel, Queue, Pid) ->
         Class:Reason -> {error, fmt({Class, Reason})}
     end.
 
+%% Set channel prefetch (QoS): how many unacked messages the broker will hand
+%% out before waiting for acks.
+set_qos(Channel, PrefetchCount, PrefetchSize, Global) ->
+    Qos = #'basic.qos'{
+        prefetch_count = PrefetchCount,
+        prefetch_size = PrefetchSize,
+        global = Global
+    },
+    try amqp_channel:call(Channel, Qos) of
+        #'basic.qos_ok'{} -> {ok, nil};
+        Other -> {error, fmt(Other)}
+    catch
+        Class:Reason -> {error, fmt({Class, Reason})}
+    end.
+
+%% A connection is represented as a pid; expose it so the consumer can monitor it.
+connection_pid(Connection) ->
+    Connection.
+
+is_connection_open(Connection) ->
+    is_process_alive(Connection).
+
 %% Settle a delivery according to a Gleam `Confirmation` (passed as an atom).
 settle(Channel, Tag, ack) ->
     amqp_channel:cast(Channel, #'basic.ack'{delivery_tag = Tag}),
@@ -230,6 +255,9 @@ decode_event(
     {delivery, Tag, Payload, RoutingKey, extract_headers(Props)};
 decode_event(#'basic.cancel'{}) ->
     cancelled;
+%% A monitored connection going down arrives as a standard `DOWN` message.
+decode_event({'DOWN', _Ref, process, _Pid, _Reason}) ->
+    connection_down;
 decode_event(_Other) ->
     ignored.
 

@@ -20,7 +20,8 @@ built on the BEAM and OTP.
 - ✅ Topology management — exchanges, bindings, deletes, and `x-*` queue/exchange arguments
 - ✅ Retry policy & metadata — backoff strategies, header round-tripping (`wren/retry`)
 - ✅ Retry/dead-letter infrastructure — delay queues with TTL, dead-letter exchange, DLQ
-- 🚧 Connection recovery, client config & ergonomics
+- ✅ Connection recovery — self-healing consumer that reconnects with backoff, plus QoS prefetch
+- 🚧 Client config & ergonomics (`from_env`, a friendly front door), docs & Hex
 
 See [`ROADMAP.md`](./ROADMAP.md) for the path to feature parity with a
 production AMQP client and the milestones along the way.

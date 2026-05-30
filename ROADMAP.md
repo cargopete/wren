@@ -140,23 +140,26 @@ _Parity target:_ `retry_infrastructure.rs`, `consumer/auto_retry.rs`,
 
 ---
 
-## Milestone 7 — Connection recovery + QoS 🎯 (next)
+## Milestone 7 — Connection recovery + QoS ✅
 
 bunnyhop hand-rolls reconnection with backoff+jitter; we let OTP do the heavy
 lifting and add the QoS knobs.
 
-- [ ] `basic.qos` prefetch (`prefetch_count`, `prefetch_size`, global flag)
-- [ ] Supervise the **connection**, not just the channel; reconnect + re-open
-  channels + re-subscribe on connection loss
-- [ ] Backoff strategy for reconnection attempts (supervisor restart intensity / sleep)
-- [ ] Optional concurrency: process N deliveries concurrently (`max_concurrent_messages`)
-- [ ] Health check + basic connection stats
+- [x] `basic.qos` prefetch via `qos` / `qos_with` (`prefetch_count`, `prefetch_size`, global)
+- [x] Recoverable consumer owns its connection, **monitors** it, and reconnects +
+  re-opens channel + re-subscribes on connection loss (`start_recoverable_consumer` / `_router`)
+- [x] Capped exponential backoff for reconnection attempts (`with_backoff`)
+- [x] `on_connect` hook (re-declare topology / metrics / observability)
+- [x] Health check (`is_open`)
 
 _Parity target:_ `implementations/amqprs/{connection,recovery,message_bus,consumer}.rs`.
 
+_Deferred:_ concurrent delivery processing (`max_concurrent_messages`) and richer
+connection stats — add when a workload needs them.
+
 ---
 
-## Milestone 8 — Client config + ergonomics ❌
+## Milestone 8 — Client config + ergonomics 🎯 (next)
 
 The friendly front door. bunnyhop's `RabbitMqClient` + hierarchical config.
 
