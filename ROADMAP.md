@@ -202,14 +202,16 @@ reliability gap for an at-least-once system.
 
 _Parity target:_ `producer.rs::new_with_confirms`, `config.rs` (ProducerConfig persistence/confirms).
 
-## Milestone 11 — Concurrent delivery processing 🎯 (next)
+## Milestone 11 — Concurrent delivery processing ✅
 
-- [ ] Opt-in concurrent handling with bounded concurrency (`max_concurrent_messages`)
-- [ ] Preserve correct per-delivery settlement under concurrency
+- [x] Opt-in concurrent handling — `start_consumer_concurrent` and
+  `with_concurrency` on recoverable consumers; each delivery runs in its own process
+- [x] Bounded by the broker's prefetch (QoS set to the concurrency level)
+- [x] Per-delivery settlement preserved (each worker acks/settles its own tag)
 
 _Parity target:_ `config.rs` (`process_concurrently`, `max_concurrent_messages`).
 
-## Milestone 12 — Connection pooling ❌
+## Milestone 12 — Connection pooling 🎯 (next)
 
 One connection per consumer/client scales poorly under many consumers.
 

@@ -13,6 +13,9 @@ All notable changes to wren are recorded here. The format follows
   verdict), erroring on nack or timeout.
 - **Persistent delivery** — `with_persistence` on `PublishOptions` (delivery
   mode 2) so messages survive a broker restart on a durable queue.
+- **Concurrent processing** — `start_consumer_concurrent` and `with_concurrency`
+  (recoverable) run up to N deliveries at once, each in its own process, bounded
+  by the broker's prefetch.
 
 ## [0.1.0] — Unreleased
 

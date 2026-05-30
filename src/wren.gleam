@@ -777,6 +777,7 @@ type State {
     channel: Channel,
     handler: fn(Message) -> Confirmation,
     retry: Option(RetryInfrastructure),
+    concurrency: Int,
   )
 }
 
@@ -804,7 +805,26 @@ pub fn start_consumer(
   queue: String,
   handler: fn(Message) -> Confirmation,
 ) -> Result(Consumer, WrenError) {
-  start_consumer_internal(channel, queue, handler, None)
+  start_consumer_internal(channel, queue, handler, None, 1)
+}
+
+/// Like `start_consumer`, but processes up to `max_concurrent` deliveries at
+/// once. Each delivery runs in its own process; the broker's prefetch is set to
+/// `max_concurrent`, so that many messages are in flight (and settled
+/// independently) at a time.
+pub fn start_consumer_concurrent(
+  channel: Channel,
+  queue: String,
+  handler: fn(Message) -> Confirmation,
+  max_concurrent: Int,
+) -> Result(Consumer, WrenError) {
+  start_consumer_internal(
+    channel,
+    queue,
+    handler,
+    None,
+    int.max(max_concurrent, 1),
+  )
 }
 
 /// Start a supervised consumer backed by retry infrastructure. The topology is
@@ -817,7 +837,7 @@ pub fn start_consumer_with_retry(
   infra: RetryInfrastructure,
 ) -> Result(Consumer, WrenError) {
   use _ <- result.try(setup_retry(channel, infra))
-  start_consumer_internal(channel, infra.main_queue, handler, Some(infra))
+  start_consumer_internal(channel, infra.main_queue, handler, Some(infra), 1)
 }
 
 fn start_consumer_internal(
@@ -825,8 +845,9 @@ fn start_consumer_internal(
   queue: String,
   handler: fn(Message) -> Confirmation,
   retry: Option(RetryInfrastructure),
+  concurrency: Int,
 ) -> Result(Consumer, WrenError) {
-  start_supervised(consumer_builder(channel, queue, handler, retry))
+  start_supervised(consumer_builder(channel, queue, handler, retry, concurrency))
 }
 
 /// Stop a running consumer and its supervisor.
@@ -843,15 +864,24 @@ fn consumer_builder(
   queue: String,
   handler: fn(Message) -> Confirmation,
   retry: Option(RetryInfrastructure),
+  concurrency: Int,
 ) {
   actor.new_with_initialiser(5000, fn(subject) {
     // init runs in the actor's own process, so `self` is the consumer pid.
+    // Bound concurrent processing with the broker's prefetch.
+    case concurrency > 1 {
+      True -> {
+        let _ = qos(channel, concurrency)
+        Nil
+      }
+      False -> Nil
+    }
     case ffi_subscribe(channel, queue, process.self()) {
       Ok(_) -> {
         let selector =
           process.new_selector()
           |> process.select_other(decode_event)
-        actor.initialised(State(channel:, handler:, retry:))
+        actor.initialised(State(channel:, handler:, retry:, concurrency:))
         |> actor.selecting(selector)
         |> actor.returning(subject)
         |> Ok
@@ -866,8 +896,14 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
   case event {
     Delivery(tag, payload, routing_key, headers) -> {
       let message = Message(payload:, routing_key:, headers:)
-      let confirmation = state.handler(message)
-      settle(state.channel, state.retry, message, tag, confirmation)
+      process_delivery(
+        state.channel,
+        state.retry,
+        state.handler,
+        message,
+        tag,
+        state.concurrency,
+      )
       actor.continue(state)
     }
     // Broker cancelled us: stop so the supervisor restarts and re-subscribes.
@@ -875,6 +911,30 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
     // A plain consumer doesn't monitor a connection, so this shouldn't arrive.
     ConnectionDown -> actor.continue(state)
     Ignored -> actor.continue(state)
+  }
+}
+
+/// Run the handler and settle the delivery. With concurrency, each delivery
+/// runs in its own (unlinked) process so handlers proceed in parallel and a
+/// crashing handler can't take the consumer down; the broker's prefetch bounds
+/// how many are in flight.
+fn process_delivery(
+  channel: Channel,
+  retry: Option(RetryInfrastructure),
+  handler: fn(Message) -> Confirmation,
+  message: Message,
+  tag: Int,
+  concurrency: Int,
+) -> Nil {
+  case concurrency > 1 {
+    True -> {
+      let _ =
+        process.spawn_unlinked(fn() {
+          settle(channel, retry, message, tag, handler(message))
+        })
+      Nil
+    }
+    False -> settle(channel, retry, message, tag, handler(message))
   }
 }
 
@@ -1126,11 +1186,12 @@ pub type RecoverableOptions {
     on_connect: fn(Connection) -> Nil,
     initial_backoff_ms: Int,
     max_backoff_ms: Int,
+    max_concurrent: Int,
   )
 }
 
-/// Default recoverable options: no prefetch, no retry, a no-op connect hook,
-/// and reconnection backoff from 500ms up to 30s.
+/// Default recoverable options: no prefetch, no retry, serial processing, a
+/// no-op connect hook, and reconnection backoff from 500ms up to 30s.
 pub fn recoverable_options() -> RecoverableOptions {
   RecoverableOptions(
     prefetch: None,
@@ -1138,7 +1199,17 @@ pub fn recoverable_options() -> RecoverableOptions {
     on_connect: fn(_connection) { Nil },
     initial_backoff_ms: 500,
     max_backoff_ms: 30_000,
+    max_concurrent: 1,
   )
+}
+
+/// Process up to `max_concurrent` deliveries at once (each in its own process).
+/// Sets the channel prefetch to match, bounding in-flight work.
+pub fn with_concurrency(
+  options: RecoverableOptions,
+  max_concurrent: Int,
+) -> RecoverableOptions {
+  RecoverableOptions(..options, max_concurrent: int.max(max_concurrent, 1))
 }
 
 /// Apply a channel prefetch each time the consumer (re)connects.
@@ -1262,7 +1333,16 @@ fn establish(
 ) -> Result(#(Connection, Channel), WrenError) {
   use connection <- result.try(connect(config))
   use channel <- result.try(open_channel(connection))
-  use _ <- result.try(case options.prefetch {
+  // An explicit prefetch wins; otherwise concurrency implies a matching prefetch.
+  let prefetch = case options.prefetch {
+    Some(count) -> Some(count)
+    None ->
+      case options.max_concurrent > 1 {
+        True -> Some(options.max_concurrent)
+        False -> None
+      }
+  }
+  use _ <- result.try(case prefetch {
     Some(count) -> qos(channel, count)
     None -> Ok(Nil)
   })
@@ -1290,8 +1370,14 @@ fn handle_recoverable_event(
   case event {
     Delivery(tag, payload, routing_key, headers) -> {
       let message = Message(payload:, routing_key:, headers:)
-      let confirmation = state.handler(message)
-      settle(state.channel, state.options.retry, message, tag, confirmation)
+      process_delivery(
+        state.channel,
+        state.options.retry,
+        state.handler,
+        message,
+        tag,
+        state.options.max_concurrent,
+      )
       actor.continue(state)
     }
     // The connection died — reconnect (with backoff) and carry on.

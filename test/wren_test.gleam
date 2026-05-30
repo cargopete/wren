@@ -773,3 +773,77 @@ pub fn publish_confirmed_without_enabling_is_an_error_test() {
 
   wren.close_connection(connection)
 }
+
+// ---------------------------------------------------------------------------
+// Concurrent delivery processing
+// ---------------------------------------------------------------------------
+
+pub fn concurrent_consumer_runs_each_delivery_in_its_own_process_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_concurrent")
+
+  // Each handler reports the process it runs in.
+  let pids = process.new_subject()
+  let handler = fn(_message: wren.Message) -> wren.Confirmation {
+    process.send(pids, process.self())
+    wren.Ack
+  }
+  let assert Ok(consumer) =
+    wren.start_consumer_concurrent(channel, "wren_test_concurrent", handler, 5)
+
+  let publish = fn(body) {
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_test_concurrent",
+      payload: body,
+    )
+  }
+  let assert Ok(_) = publish("1")
+  let assert Ok(_) = publish("2")
+  let assert Ok(_) = publish("3")
+
+  // Concurrent processing spawns a fresh process per delivery, so the three
+  // pids are all distinct.
+  let assert Ok(p1) = process.receive(from: pids, within: 5000)
+  let assert Ok(p2) = process.receive(from: pids, within: 5000)
+  let assert Ok(p3) = process.receive(from: pids, within: 5000)
+  assert p1 != p2
+  assert p2 != p3
+  assert p1 != p3
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}
+
+pub fn serial_consumer_runs_deliveries_in_one_process_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_serial")
+
+  let pids = process.new_subject()
+  let handler = fn(_message: wren.Message) -> wren.Confirmation {
+    process.send(pids, process.self())
+    wren.Ack
+  }
+  // A plain consumer handles deliveries inline in the actor — one process.
+  let assert Ok(consumer) =
+    wren.start_consumer(channel, "wren_test_serial", handler)
+
+  let publish = fn(body) {
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_test_serial",
+      payload: body,
+    )
+  }
+  let assert Ok(_) = publish("1")
+  let assert Ok(_) = publish("2")
+
+  let assert Ok(p1) = process.receive(from: pids, within: 5000)
+  let assert Ok(p2) = process.receive(from: pids, within: 5000)
+  assert p1 == p2
+
+  wren.stop(consumer)
+  wren.close_connection(connection)
+}
