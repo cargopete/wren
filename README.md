@@ -18,7 +18,8 @@ built on the BEAM and OTP.
 - ✅ A `Codec` abstraction with a JSON codec, plus typed `publish_encoded` / `decode_message`
 - ✅ Router-style consumer — dispatch by message `kind` to typed handlers, with a fallback
 - ✅ Topology management — exchanges, bindings, deletes, and `x-*` queue/exchange arguments
-- 🚧 Retry/dead-letter infrastructure, connection recovery
+- ✅ Retry policy & metadata — backoff strategies, header round-tripping (`wren/retry`)
+- 🚧 Retry/dead-letter *infrastructure* (delay queues + DLX), connection recovery
 
 See [`ROADMAP.md`](./ROADMAP.md) for the path to feature parity with a
 production AMQP client and the milestones along the way.

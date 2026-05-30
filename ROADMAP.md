@@ -102,22 +102,25 @@ _Deferred:_ `if_unused` / `if_empty` delete flags (add when a use case needs the
 
 ---
 
-## Milestone 5 — Retry policy + metadata 🎯 (next)
+## Milestone 5 — Retry policy + metadata ✅
 
-The brains of retrying. bunnyhop's `retry.rs`.
+The brains of retrying. bunnyhop's `retry.rs`. New module `wren/retry` (pure).
 
-- [ ] `RetryStrategy`: `ExponentialBackoff(initial, max, multiplier)` and `FixedInterval(d)`
-- [ ] `RetryPolicy { strategy, max_attempts }`; `calculate_delay(attempt)`; `retry_intervals()`
-- [ ] `RetryMetadata`: attempt count, first-death/last-retry timestamps, original error/reason
-- [ ] Header (de)serialisation: `x-retry-count`, `x-max-retries`, `x-first-death`,
+- [x] `RetryStrategy`: `ExponentialBackoff(initial, max, multiplier)` and `FixedInterval(d)`
+- [x] `RetryPolicy { strategy, max_attempts }`; `calculate_delay(attempt)` (capped); `retry_intervals()`
+- [x] `RetryMetadata`: attempt count, first-death/last-retry timestamps, original error/reason, original routing key
+- [x] Header (de)serialisation: `x-retry-count`, `x-max-retries`, `x-first-death`,
   `x-last-retry`, `x-original-error`, `x-retry-reason`, `x-original-routing-key`
-- [ ] Exhaustion detection (`is_exhausted`)
+- [x] `record_failure` + exhaustion detection (`is_exhausted`)
 
 _Parity target:_ `retry.rs`, `consumer/builder.rs` (retry-header plumbing).
 
+_Deferred to M6:_ timestamp generation (needs a clock) happens when wiring into
+the live retry flow.
+
 ---
 
-## Milestone 6 — Retry infrastructure + real DLX ❌
+## Milestone 6 — Retry infrastructure + real DLX 🎯 (next)
 
 Where wren finally earns its keep over raw `amqp_client`. Replaces the `Retry`
 requeue stub and the `DeadLetter == Reject` stub with genuine topology.
