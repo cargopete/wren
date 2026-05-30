@@ -1,7 +1,8 @@
 -module(wren_ffi).
 -include_lib("amqp_client/include/amqp_client.hrl").
 -export([
-    connect/4,
+    connect/7,
+    getenv/1,
     open_channel/1,
     declare_queue_full/6,
     declare_exchange/7,
@@ -29,16 +30,26 @@
 %%   {ok, X} | {error, Binary}  -> Result(X, String)
 %% Opaque connection/channel pids are passed back and forth as-is.
 
-connect(Host, Port, User, Pass) ->
+connect(Host, Port, User, Pass, VHost, Heartbeat, Timeout) ->
     Params = #amqp_params_network{
         host = binary_to_list(Host),
         port = Port,
         username = User,
-        password = Pass
+        password = Pass,
+        virtual_host = VHost,
+        heartbeat = Heartbeat,
+        connection_timeout = Timeout
     },
     case amqp_connection:start(Params) of
         {ok, Connection} -> {ok, Connection};
         {error, Reason} -> {error, fmt(Reason)}
+    end.
+
+%% Read an environment variable as `{ok, Binary} | {error, nil}`.
+getenv(Name) ->
+    case os:getenv(binary_to_list(Name)) of
+        false -> {error, nil};
+        Value -> {ok, list_to_binary(Value)}
     end.
 
 open_channel(Connection) ->

@@ -142,12 +142,93 @@ pub fn exchange_options() -> ExchangeOptions {
 
 /// Connection settings. Build via `default_config` and override as needed.
 pub type Config {
-  Config(host: String, port: Int, username: String, password: String)
+  Config(
+    host: String,
+    port: Int,
+    username: String,
+    password: String,
+    /// The AMQP virtual host (`"/"` is the broker default).
+    virtual_host: String,
+    /// Heartbeat interval in seconds (`0` disables heartbeats).
+    heartbeat_seconds: Int,
+    /// How long to wait for the TCP connection to establish, in milliseconds.
+    connection_timeout_ms: Int,
+  )
 }
 
-/// Sensible localhost defaults (the classic `guest`/`guest`).
+/// Sensible localhost defaults (the classic `guest`/`guest`, vhost `/`).
 pub fn default_config() -> Config {
-  Config(host: "localhost", port: 5672, username: "guest", password: "guest")
+  Config(
+    host: "localhost",
+    port: 5672,
+    username: "guest",
+    password: "guest",
+    virtual_host: "/",
+    heartbeat_seconds: 60,
+    connection_timeout_ms: 10_000,
+  )
+}
+
+/// Build a `Config` from the environment, reading the `RABBITMQ_*` variables.
+/// Anything unset (or an unparseable number) falls back to `default_config`.
+///
+/// Recognised: `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USERNAME` (or
+/// `RABBITMQ_USER`), `RABBITMQ_PASSWORD` (or `RABBITMQ_PASS`), `RABBITMQ_VHOST`,
+/// `RABBITMQ_HEARTBEAT`, `RABBITMQ_CONNECTION_TIMEOUT`.
+pub fn config_from_env() -> Config {
+  config_from_lookup(ffi_getenv)
+}
+
+/// Build a `Config` from an arbitrary lookup function (env, a map, a config
+/// file…). Keys are the same `RABBITMQ_*` names as `config_from_env`; missing or
+/// invalid values fall back to `default_config`.
+pub fn config_from_lookup(lookup: fn(String) -> Result(String, Nil)) -> Config {
+  let defaults = default_config()
+  Config(
+    host: first_of(lookup, ["RABBITMQ_HOST"], defaults.host),
+    port: int_or(lookup("RABBITMQ_PORT"), defaults.port),
+    username: first_of(
+      lookup,
+      ["RABBITMQ_USERNAME", "RABBITMQ_USER"],
+      defaults.username,
+    ),
+    password: first_of(
+      lookup,
+      ["RABBITMQ_PASSWORD", "RABBITMQ_PASS"],
+      defaults.password,
+    ),
+    virtual_host: first_of(lookup, ["RABBITMQ_VHOST"], defaults.virtual_host),
+    heartbeat_seconds: int_or(
+      lookup("RABBITMQ_HEARTBEAT"),
+      defaults.heartbeat_seconds,
+    ),
+    connection_timeout_ms: int_or(
+      lookup("RABBITMQ_CONNECTION_TIMEOUT"),
+      defaults.connection_timeout_ms,
+    ),
+  )
+}
+
+fn first_of(
+  lookup: fn(String) -> Result(String, Nil),
+  keys: List(String),
+  default: String,
+) -> String {
+  case keys {
+    [] -> default
+    [key, ..rest] ->
+      case lookup(key) {
+        Ok(value) -> value
+        Error(_) -> first_of(lookup, rest, default)
+      }
+  }
+}
+
+fn int_or(value: Result(String, Nil), default: Int) -> Int {
+  case value {
+    Ok(raw) -> result.unwrap(int.parse(raw), default)
+    Error(_) -> default
+  }
 }
 
 // ===========================================================================
@@ -156,7 +237,15 @@ pub fn default_config() -> Config {
 
 /// Open a connection to the broker.
 pub fn connect(config: Config) -> Result(Connection, WrenError) {
-  ffi_connect(config.host, config.port, config.username, config.password)
+  ffi_connect(
+    config.host,
+    config.port,
+    config.username,
+    config.password,
+    config.virtual_host,
+    config.heartbeat_seconds,
+    config.connection_timeout_ms,
+  )
   |> result.map_error(ConnectionFailed)
 }
 
@@ -464,6 +553,45 @@ pub fn close_channel(channel: Channel) -> Nil {
 /// Close a connection (and implicitly its channels).
 pub fn close_connection(connection: Connection) -> Nil {
   ffi_close_connection(connection)
+}
+
+// ===========================================================================
+// Client — a friendly front door bundling a connection and a channel
+// ===========================================================================
+
+/// A ready-to-use connection paired with an open channel. Saves the
+/// connect-then-open-channel dance for the common case; reach for the
+/// `client_*` accessors to use the wider API.
+pub opaque type Client {
+  Client(connection: Connection, channel: Channel, config: Config)
+}
+
+/// Connect and open a channel in one step.
+pub fn start_client(config: Config) -> Result(Client, WrenError) {
+  use connection <- result.try(connect(config))
+  use channel <- result.try(open_channel(connection))
+  Ok(Client(connection:, channel:, config:))
+}
+
+/// The client's open channel — pass it to `publish`, `declare_queue`, etc.
+pub fn client_channel(client: Client) -> Channel {
+  client.channel
+}
+
+/// The client's underlying connection (e.g. for `is_open` or a second channel).
+pub fn client_connection(client: Client) -> Connection {
+  client.connection
+}
+
+/// The config the client was opened with.
+pub fn client_config(client: Client) -> Config {
+  client.config
+}
+
+/// Close the client's channel and connection.
+pub fn close_client(client: Client) -> Nil {
+  close_channel(client.channel)
+  close_connection(client.connection)
 }
 
 // ===========================================================================
@@ -1198,7 +1326,13 @@ fn ffi_connect(
   port: Int,
   username: String,
   password: String,
+  virtual_host: String,
+  heartbeat_seconds: Int,
+  connection_timeout_ms: Int,
 ) -> Result(Connection, String)
+
+@external(erlang, "wren_ffi", "getenv")
+fn ffi_getenv(name: String) -> Result(String, Nil)
 
 @external(erlang, "wren_ffi", "open_channel")
 fn ffi_open_channel(connection: Connection) -> Result(Channel, String)

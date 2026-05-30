@@ -713,3 +713,26 @@ pub fn recoverable_consumer_heals_after_connection_drop_test() {
   wren.stop(consumer)
   wren.close_connection(connection)
 }
+
+// ---------------------------------------------------------------------------
+// Client front door
+// ---------------------------------------------------------------------------
+
+pub fn client_opens_channel_and_publishes_test() {
+  let assert Ok(client) = wren.start_client(test_config())
+  let channel = wren.client_channel(client)
+  fresh_queue(channel, "wren_test_client")
+
+  let assert Ok(_) =
+    wren.publish(
+      channel,
+      exchange: "",
+      routing_key: "wren_test_client",
+      payload: "via client",
+    )
+  let assert Ok(payload) = wren.get(channel, "wren_test_client")
+  assert payload == "via client"
+  assert wren.is_open(wren.client_connection(client)) == True
+
+  wren.close_client(client)
+}

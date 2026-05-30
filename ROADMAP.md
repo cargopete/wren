@@ -159,20 +159,22 @@ connection stats — add when a workload needs them.
 
 ---
 
-## Milestone 8 — Client config + ergonomics 🎯 (next)
+## Milestone 8 — Client config + ergonomics ✅
 
 The friendly front door. bunnyhop's `RabbitMqClient` + hierarchical config.
 
-- [ ] Richer `Config`: heartbeat, connection timeout, vhost, TLS toggle
-- [ ] `config_from_env` (`RABBITMQ_*`) with validation
-- [ ] A `Client` entry point with factory helpers (producer, consumer, queue manager)
-- [ ] One-call `with_auto_retry`-style setup wiring infra + producer + consumer
+- [x] Richer `Config`: `virtual_host`, `heartbeat_seconds`, `connection_timeout_ms`
+- [x] `config_from_env` (`RABBITMQ_*`) + `config_from_lookup` (any source), with default fallback
+- [x] A `Client` front door (`start_client` / `client_channel` / `close_client`)
+- [x] One-call retry wiring already provided by `start_consumer_with_retry` / `start_recoverable_consumer`
 
 _Parity target:_ `implementations/amqprs/client.rs`, `config.rs`.
 
+_Deferred:_ TLS toggle (needs `ssl_options` wiring) — add when a deployment needs it.
+
 ---
 
-## Milestone 9 — Docs, examples, 1.0 polish ❌
+## Milestone 9 — Docs, examples, 1.0 polish 🎯 (next)
 
 - [ ] Module docs + `gleam docs` pass
 - [ ] Worked examples: simple consumer, router, retry/DLX, recovery
