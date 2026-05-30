@@ -234,13 +234,15 @@ _Deferred:_ built-in reconnection counter on the recoverable consumer — the
 `on_connect` hook already lets callers count reconnects; a built-in stat would
 mean exposing the actor's subject.
 
-## Milestone 14 — Kind-based producer 🎯 (next)
+## Milestone 14 — Kind-based producer ✅
 
-- [ ] A producer with a `kind → (exchange, routing key)` map, applied at publish time
+- [x] `KindRouting` — a `kind → (exchange, routing key)` map; `publish_for_kind` /
+  `publish_encoded_for_kind` apply it and stamp the `kind` header
+- [x] Explicit exchange wins; routing key defaults to the kind (matching bunnyhop)
 
 _Parity target:_ `producer.rs::KindBasedProducer`.
 
-## Milestone 15 — TLS connections ❌
+## Milestone 15 — TLS connections 🎯 (next)
 
 - [ ] TLS via `amqp_params_network` `ssl_options`; a `Config` toggle + cert options
 

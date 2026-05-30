@@ -20,6 +20,9 @@ All notable changes to wren are recorded here. The format follows
   out channels round-robin across them; `pool_size` / `pool_stats` / `close_pool`.
 - **Active health check** — `health_check` round-trips a throwaway declare to
   confirm a channel is responsive, not merely alive.
+- **Kind-based producer** — `KindRouting` maps message kinds to
+  `#(exchange, routing key)`; `publish_for_kind` / `publish_encoded_for_kind`
+  apply it and stamp the `kind` header.
 
 ## [0.1.0] — Unreleased
 

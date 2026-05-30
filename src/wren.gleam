@@ -591,6 +591,97 @@ fn codec_error_reason(error: codec.CodecError) -> String {
   }
 }
 
+// ===========================================================================
+// Kind-based producer — route by message kind
+// ===========================================================================
+
+/// A map from message `kind` to its destination `#(exchange, routing_key)`.
+/// `publish_for_kind` consults it so producers don't repeat routing at every
+/// call site. Build with `kind_routing` and `route_kind` / `route_kind_with_key`.
+pub opaque type KindRouting {
+  KindRouting(routes: Dict(String, #(String, String)))
+}
+
+/// An empty kind-routing table.
+pub fn kind_routing() -> KindRouting {
+  KindRouting(routes: dict.new())
+}
+
+/// Route `kind` to `exchange`, using the kind itself as the routing key.
+pub fn route_kind(
+  routing: KindRouting,
+  kind: String,
+  exchange: String,
+) -> KindRouting {
+  route_kind_with_key(routing, kind, exchange, kind)
+}
+
+/// Route `kind` to `exchange` with an explicit `routing_key`.
+pub fn route_kind_with_key(
+  routing: KindRouting,
+  kind: String,
+  exchange: String,
+  routing_key: String,
+) -> KindRouting {
+  KindRouting(
+    routes: dict.insert(routing.routes, kind, #(exchange, routing_key)),
+  )
+}
+
+/// Publish `payload` for `kind`, applying the routing table and stamping the
+/// `kind` header. An exchange set explicitly on `options` wins; otherwise the
+/// table's mapping (if any) is used, falling back to the default exchange.
+pub fn publish_for_kind(
+  channel: Channel,
+  routing: KindRouting,
+  kind: String,
+  payload: String,
+  options: PublishOptions,
+) -> Result(Nil, WrenError) {
+  publish_with_options(
+    channel,
+    payload,
+    apply_kind_routing(routing, kind, options) |> with_kind(kind),
+  )
+}
+
+/// Like `publish_for_kind`, but encodes a typed value with `codec` first.
+pub fn publish_encoded_for_kind(
+  channel: Channel,
+  routing: KindRouting,
+  kind: String,
+  value: a,
+  codec: Codec(a),
+  options: PublishOptions,
+) -> Result(Nil, WrenError) {
+  case codec.encode(value) {
+    Ok(payload) -> publish_for_kind(channel, routing, kind, payload, options)
+    Error(error) -> Error(EncodingFailed(codec_error_reason(error)))
+  }
+}
+
+fn apply_kind_routing(
+  routing: KindRouting,
+  kind: String,
+  options: PublishOptions,
+) -> PublishOptions {
+  // An explicitly-set exchange takes precedence over the table.
+  let options = case options.exchange == "" {
+    False -> options
+    True ->
+      case dict.get(routing.routes, kind) {
+        Ok(#(exchange, routing_key)) ->
+          PublishOptions(..options, exchange:, routing_key:)
+        Error(_) -> options
+      }
+  }
+  // A routing key still unset defaults to the kind (matching bunnyhop).
+  case options.routing_key == "" {
+    True -> PublishOptions(..options, routing_key: kind)
+    False -> options
+  }
+}
+
 /// Fetch a single message from a queue (polls briefly). A primitive for
 /// one-off fetches; prefer `start_consumer` for ongoing work.
 pub fn get(channel: Channel, queue: String) -> Result(String, WrenError) {

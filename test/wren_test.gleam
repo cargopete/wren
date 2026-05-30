@@ -908,3 +908,65 @@ pub fn pool_stats_counts_channels_handed_out_test() {
   wren.close_channel(c3)
   wren.close_pool(pool)
 }
+
+// ---------------------------------------------------------------------------
+// Kind-based producer
+// ---------------------------------------------------------------------------
+
+pub fn publish_for_kind_routes_via_mapped_exchange_test() {
+  let #(connection, channel) = open()
+  let assert Ok(_) =
+    wren.declare_exchange(
+      channel,
+      "wren_test_kind_ex",
+      wren.Topic,
+      wren.exchange_options(),
+    )
+  fresh_queue(channel, "wren_test_kind_q")
+  let assert Ok(_) =
+    wren.bind_queue(
+      channel,
+      queue: "wren_test_kind_q",
+      exchange: "wren_test_kind_ex",
+      routing_key: "order.created",
+    )
+
+  // Map the kind to the exchange; the routing key defaults to the kind.
+  let routing =
+    wren.kind_routing()
+    |> wren.route_kind("order.created", "wren_test_kind_ex")
+
+  let assert Ok(_) =
+    wren.publish_for_kind(
+      channel,
+      routing,
+      "order.created",
+      "routed by kind",
+      wren.publish_options(),
+    )
+  let assert Ok(payload) = wren.get(channel, "wren_test_kind_q")
+  assert payload == "routed by kind"
+
+  let assert Ok(_) = wren.delete_exchange(channel, "wren_test_kind_ex")
+  wren.close_connection(connection)
+}
+
+pub fn publish_for_kind_falls_back_to_default_exchange_test() {
+  let #(connection, channel) = open()
+  fresh_queue(channel, "wren_test_kind_fallback")
+
+  // No mapping for this kind -> default exchange, routing key = kind = queue.
+  let routing = wren.kind_routing()
+  let assert Ok(_) =
+    wren.publish_for_kind(
+      channel,
+      routing,
+      "wren_test_kind_fallback",
+      "unmapped",
+      wren.publish_options(),
+    )
+  let assert Ok(payload) = wren.get(channel, "wren_test_kind_fallback")
+  assert payload == "unmapped"
+
+  wren.close_connection(connection)
+}
