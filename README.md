@@ -35,13 +35,6 @@ And, since v0.2:
 - ✅ Full AMQP message properties (`correlation_id`/`reply_to` for RPC, …) and batch / multi-target publishing
 - ✅ Raw byte (`BitArray`) payloads, with `publish_text` / `message_text` for the text case
 
-wren has **feature parity** with the production `bunnyhop` crate across every
-meaningful capability. A few bunnyhop features are expressed differently by
-deliberate, idiomatic-Gleam choice — no axum-style extractors, dependency
-injection, or derive macros; handlers take an explicit `Message` and codecs are
-values. Only a handful of genuinely niche refinements are left out (a polling
-consumer, pool stale-channel reaping); see the roadmap's "Known remaining gaps".
-
 See [`ROADMAP.md`](./ROADMAP.md) for how each piece maps to a production AMQP
 client, and [`CHANGELOG.md`](./CHANGELOG.md) for what landed when.
 
