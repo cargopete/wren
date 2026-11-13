@@ -1,0 +1,58 @@
+# yatr - https://github.com/cargopete/yatr
+#
+# CI calls these tasks by name, so `yatr ci` locally is the same gate.
+# The test suite talks to a real RabbitMQ: `yatr broker-up` first.
+
+[settings]
+cache = true
+
+[tasks.deps]
+desc = "Download Hex packages"
+run = ["gleam deps download"]
+sources = ["gleam.toml", "manifest.toml"]
+outputs = ["build/packages/**"]
+
+[tasks.build]
+desc = "Compile for the BEAM"
+depends = ["deps"]
+run = ["gleam build"]
+sources = ["src/**", "gleam.toml", "manifest.toml"]
+outputs = ["build/dev/erlang/**"]
+
+[tasks.fmt]
+desc = "Format src and test"
+run = ["gleam format src test"]
+no_cache = true
+
+[tasks.fmt-check]
+desc = "Fail if src or test is unformatted (CI)"
+run = ["gleam format --check src test"]
+sources = ["src/**/*.gleam", "test/**/*.gleam"]
+
+[tasks.test]
+desc = "The gleeunit suite, against the broker (CI)"
+depends = ["deps"]
+run = ["gleam test"]
+sources = ["src/**", "test/**", "gleam.toml", "manifest.toml"]
+
+[tasks.docs]
+desc = "Build the HexDocs site into build/dev/docs"
+depends = ["deps"]
+run = ["gleam docs build"]
+sources = ["src/**", "gleam.toml", "manifest.toml", "README.md", "CHANGELOG.md"]
+outputs = ["build/dev/docs/wren/**"]
+
+[tasks.broker-up]
+desc = "Start a local RabbitMQ (wren/wren)"
+run = ["docker compose up -d"]
+no_cache = true
+
+[tasks.broker-down]
+desc = "Stop the local RabbitMQ"
+run = ["docker compose down"]
+no_cache = true
+
+[tasks.ci]
+desc = "What CI runs: test, fmt-check"
+depends = ["test", "fmt-check"]
+run = []
