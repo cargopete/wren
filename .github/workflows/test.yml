@@ -7,6 +7,10 @@ on:
       - main
   pull_request:
 
+env:
+  # The commands CI runs live in yatr.toml, so `yatr ci` locally is the same gate.
+  YATR_VERSION: "1.2.0"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -31,6 +35,16 @@ jobs:
           gleam-version: "1.16.0"
           rebar3-version: "3"
           # elixir-version: "1"
-      - run: gleam deps download
-      - run: gleam test
-      - run: gleam format --check src test
+      - name: Cache yatr
+        id: cache-yatr
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/yatr
+          key: yatr-${{ runner.os }}-${{ env.YATR_VERSION }}
+      - name: Install yatr
+        if: steps.cache-yatr.outputs.cache-hit != 'true'
+        run: cargo install yatr --version ${{ env.YATR_VERSION }} --locked
+        env:
+          RUSTFLAGS: ""
+      - run: yatr test
+      - run: yatr fmt-check
